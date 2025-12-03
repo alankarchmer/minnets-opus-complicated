@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     max_suggestions: int = 3
     
     # OpenAI
-    openai_model: str = "gpt-4.1"
+    openai_model: str = "gpt-5.1"
     
     class Config:
         env_file = ".env"

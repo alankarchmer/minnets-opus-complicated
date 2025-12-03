@@ -77,7 +77,7 @@ Traditional RAG shows you what's most similar to your context - but that's often
 - Python 3.11+
 - Xcode 15+
 - API keys for:
-  - [OpenAI](https://platform.openai.com/api-keys) (GPT-4)
+  - [OpenAI](https://platform.openai.com/api-keys) (GPT-5.1)
   - [Supermemory](https://supermemory.ai) (knowledge base)
   - [Exa.ai](https://exa.ai) (web search)
 
