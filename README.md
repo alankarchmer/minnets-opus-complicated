@@ -59,15 +59,35 @@ Learns that:
 - User B prefers suggestions only when coding
 - Time-of-day preferences, app-specific preferences, etc.
 
-## The "Graph Pivot" Strategy
+## The Retrieval Strategy
 
-Traditional RAG shows you what's most similar to your context - but that's often redundant. Minnets uses a different approach:
+Traditional RAG shows you what's most similar to your context - but that's often redundant. Minnets uses a cascade architecture with tangential concept extraction:
 
-1. **Find the Anchor**: Vector search finds memories similar to your screen content
-2. **Filter Echo Chamber**: Discard results with >85% similarity (too redundant)
-3. **Pivot to Neighbors**: Traverse the knowledge graph to find *connected but different* content
-4. **Score with MMR Doughnut**: Sweet spot is 65-85% similarity - related but novel
-5. **Boost Forgotten Memories**: Older, unaccessed memories get priority
+### Concept Extraction
+- Extracts **tangential concepts** (related but different topics)
+- Avoids searching for the main subject (user already has that)
+- Example: Reading about "Pep Guardiola" → search for "positional play tactics", not "Pep Guardiola"
+
+### Cascade Router (Graph → Vector → Web)
+
+1. **Graph Pivot Check**: Find graph-connected insights
+   - Find anchors via vector search
+   - Filter echo chamber (>85% similarity → pivot to neighbors)
+   - Keep sweet spot anchors (65-85% similarity)
+   - Traverse graph relationships (derives, extends, contrast)
+
+2. **Vector Check**: Direct similarity search
+   - High confidence (>85%) → Show KB results
+   - Medium (65-85%) → Show KB + offer web search
+   - Low (<65%) → Trigger web search
+
+3. **Web Search**: When local knowledge is insufficient
+   - Search for tangential concepts
+   - Filter out results about main subject (redundancy avoidance)
+
+### Scoring
+- **MMR Doughnut**: Sweet spot is 65-85% similarity - related but novel
+- **Temporal Boost**: Older, unaccessed memories get priority
 
 ## Setup
 
@@ -113,7 +133,9 @@ open MinnetsMac.xcodeproj
 # Build and run (⌘R)
 ```
 
-**Important**: Grant Accessibility permissions when prompted. This allows Minnets to read text from your screen.
+**Important**: Grant permissions when prompted:
+- **Accessibility**: Allows Minnets to read text from your screen
+- **Screen Recording**: Fallback for apps that don't support Accessibility API
 
 ## Usage
 
@@ -129,39 +151,63 @@ open MinnetsMac.xcodeproj
 
 ### Context Capture
 
-Minnets captures text from your frontmost window using:
-1. **Accessibility API** (preferred) - Direct text extraction
-2. **OCR fallback** - Screen capture + Vision framework
+Minnets captures text from your frontmost window using a three-tier approach:
+1. **AppleScript** (primary) - Extracts text and URLs from browsers (Chrome, Safari, Arc)
+2. **Accessibility API** (fallback) - Direct text extraction when AppleScript fails
+3. **ScreenCaptureKit + OCR** (last resort) - Screen capture + Vision framework OCR
+
+For browsers, Minnets extracts the current URL and optionally fetches full page content via Exa.ai for richer context.
 
 Captures happen every 15 seconds when context changes significantly.
 
 ### Retrieval Pipeline
 
+The retrieval pipeline uses a **cascade architecture** with tangential concept extraction:
+
 ```python
-# 1. Extract concepts from screen
-concepts = extract_concepts(screen_text)  # ["transformers", "attention", "PyTorch"]
+# 1. Extract TANGENTIAL concepts (not the main subject)
+# If user is reading about "Pep Guardiola", extract:
+# ["positional play tactics", "tiki-taka philosophy", "Johan Cruyff influence"]
+# NOT ["Pep Guardiola", "Manchester City"]
+concepts = extract_tangential_concepts(screen_text)
+main_subject = extract_main_subject(screen_text)  # For redundancy filtering
 
-# 2. Find anchors in Supermemory
-anchors = supermemory.search(concepts)  # High similarity matches
+# 2. Cascade Router: Graph → Vector → Web
+search_query = " ".join(concepts[:3])
 
-# 3. Filter echo chamber
-anchors = [a for a in anchors if a.similarity < 0.85]
+# Step 1: Graph Pivot Check (Serendipity)
+graph_result = cascade_router.check_graph(query)
+if graph_result:
+    # Found graph-connected insights - highest value
+    return graph_result
 
-# 4. Graph pivot - find neighbors
-neighbors = []
-for anchor in high_similarity_anchors:
-    related = supermemory.get_related(anchor, ["derives", "extends"])
-    neighbors.extend(related)
+# Step 2: Vector Check (Direct similarity)
+vector_result, confidence = cascade_router.check_vector(query)
+if confidence == HIGH:
+    return vector_result  # Definitely in your notes
+elif confidence == MEDIUM:
+    return vector_result  # Might be in notes, offer web search
 
-# 5. Score with MMR doughnut
-scored = apply_mmr_scoring(neighbors)  # Sweet spot: 0.65-0.85
+# Step 3: Web Search Fallback
+web_results = exa.search_for_connections(
+    concepts=concepts,
+    exclude_text=main_subject  # Filter redundant results
+)
 
-# 6. Temporal boost for forgotten memories
+# 4. Score with MMR doughnut model
+scored = apply_mmr_scoring(all_results)
+# - Echo chamber (>0.85): Penalize 50%
+# - Sweet spot (0.65-0.85): Bonus 20%
+# - Too distant (<0.65): Lower score
+
+# 5. Temporal boost for forgotten memories
 scored = apply_temporal_boost(scored)  # log(days_since_accessed)
 
-# 7. Synthesize human-readable suggestions
-suggestions = synthesize(scored, context)
+# 6. Synthesize human-readable suggestions
+suggestions = synthesize(scored, context, emphasize_novelty=True)
 ```
+
+**Key Insight**: Minnets searches for *related but different* concepts, not the main subject. This avoids redundancy and surfaces serendipitous connections.
 
 ### Scoring Model
 
@@ -204,12 +250,16 @@ minnets/
 │   ├── MinnetsMacApp.swift         # App entry, menubar setup
 │   ├── FloatingPanelView.swift     # Main suggestion panel
 │   ├── SuggestionCard.swift        # Individual suggestion UI
+│   ├── OnboardingView.swift        # Permission onboarding flow
 │   ├── ContextManager.swift        # Orchestrates capture & analysis
 │   ├── BackendClient.swift         # HTTP client for backend
 │   ├── Models.swift                # Data models
 │   ├── ContextCapture/
-│   │   ├── AccessibilityCapture.swift
-│   │   └── OCRCapture.swift
+│   │   ├── AppleScriptCapture.swift # Primary capture (browsers)
+│   │   ├── AccessibilityCapture.swift # Fallback capture
+│   │   ├── ScreenCapture.swift     # ScreenCaptureKit + OCR
+│   │   ├── OCRCapture.swift        # OCR utilities
+│   │   └── PermissionManager.swift # Permission handling
 │   ├── Interruptibility/           # When to interrupt
 │   │   ├── FlowStateGate.swift     # Layer 1: Hard blocks
 │   │   ├── ConfusionDetector.swift # Layer 2: Need detection
@@ -226,8 +276,7 @@ minnets/
 │   ├── retrieval/
 │   │   ├── supermemory.py          # Supermemory API client
 │   │   ├── exa_search.py           # Exa.ai web search
-│   │   ├── graph_pivot.py          # Graph Pivot strategy
-│   │   ├── cascade_router.py       # Graph → Vector → Web
+│   │   ├── cascade_router.py       # Cascade: Graph → Vector → Web
 │   │   └── scoring.py              # MMR + temporal scoring
 │   └── synthesis/
 │       └── openai_client.py        # GPT for extraction & synthesis
@@ -258,14 +307,57 @@ Analyze screen context and get suggestions.
       "content": "Your notes from 2021 mention...",
       "reasoning": "Connects to transformer architecture...",
       "source": "supermemory",
-      "relevance_score": 0.78,
-      "novelty_score": 0.85,
-      "timestamp": "2024-01-15T10:30:00Z"
+      "relevanceScore": 0.78,
+      "noveltyScore": 0.85,
+      "timestamp": "2024-01-15T10:30:00Z",
+      "sourceUrl": null
     }
   ],
-  "processing_time_ms": 1250
+  "processingTimeMs": 1250,
+  "retrievalPath": "graph",
+  "confidence": "high",
+  "graphInsight": true,
+  "shouldOfferWeb": false
 }
 ```
+
+### `POST /search-web`
+
+Explicit web search trigger (when user clicks "Search Web" button).
+
+```json
+// Request
+POST /search-web?query=positional play tactics
+
+// Response
+{
+  "suggestions": [...],
+  "retrievalPath": "web",
+  "confidence": "low"
+}
+```
+
+### `POST /save-to-memory`
+
+Save a suggestion to Supermemory knowledge base.
+
+```json
+// Request
+{
+  "title": "Positional Play Tactics",
+  "content": "Full content...",
+  "sourceUrl": "https://example.com/article",
+  "context": "Context when found..."
+}
+```
+
+### `POST /test-exa`
+
+Test endpoint to verify Exa search is working.
+
+### `POST /test-tangential`
+
+Test endpoint to see what tangential concepts are extracted from context.
 
 ### `GET /health`
 
