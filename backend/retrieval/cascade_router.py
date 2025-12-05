@@ -1,10 +1,17 @@
 """
-Cascade Router: Graph → Vector → Web
+Cascade Router: Graph Pivot → Vector → Web
 
-Prioritizes insight over information:
-1. Graph Check (High Value / Serendipity) - derives, extends relationships
-2. Local Vector Check (Fast / Fact-Checking) - direct similarity
-3. Web Search (New Information) - when local knowledge is insufficient
+Combines the cascade architecture with the Graph Pivot strategy:
+
+Graph Pivot (Step 1):
+- Find anchors via vector search
+- Echo chamber filter: similarity > 0.85 → pivot to neighbors instead
+- Sweet spot: 0.65-0.85 similarity → keep these (related but novel)
+- Pivot: Get graph neighbors (derives, extends, contrast) from echo chamber anchors
+
+Cascade Fallback (Steps 2-3):
+- Vector Check: Direct similarity with confidence levels
+- Web Search: When local knowledge is insufficient
 """
 
 import asyncio
@@ -53,10 +60,13 @@ class CascadeResult:
 
 class CascadeRouter:
     """
-    Implements the cascade architecture:
+    Implements cascade architecture with Graph Pivot strategy.
     
-    Step 1: Graph Check - Look for derives/extends relationships
-            If found → Bypass threshold, show immediately (highest value)
+    Step 1: Graph Pivot Check
+            - Find anchors, filter echo chamber (>0.85 similarity)
+            - Keep sweet spot anchors (0.65-0.85)
+            - Pivot from echo chamber to graph neighbors
+            - If insights found → Show immediately (highest value)
     
     Step 2: Vector Check - Direct similarity search
             High confidence (>0.85) → Show KB suggestion
@@ -147,55 +157,94 @@ class CascadeRouter:
     
     async def _check_graph(self, query: str) -> Optional[list[Memory]]:
         """
-        Check for graph connections (derives, extends, updates).
-        Returns memories if strong graph insight found.
+        Graph Pivot strategy: Don't show what matches the screen.
+        Find anchors, filter echo chamber, pivot to graph neighbors.
         
-        In Supermemory, relationships are:
-        - extends: New info adds to existing knowledge
-        - updates: New info contradicts/updates existing knowledge
+        The key insight: High similarity (>0.85) = echo chamber = redundant.
+        Instead, use those as pivot points to find connected but different content.
+        
+        Categories:
+        - Echo Chamber (>0.85): Too similar - pivot to their neighbors
+        - Sweet Spot (0.65-0.85): Related but novel - keep these
+        - Too Distant (<0.65): Probably irrelevant - ignore
+        
+        Relationship types:
         - derives: Inferred connections from patterns
+        - extends: New info adds to existing knowledge
+        - contrast: Opposing or alternative viewpoints
         """
-        # First, find anchors with include_related=True to get relationships
-        anchors = await self.supermemory.search(query, limit=3, include_related=True)
+        # Find anchors with relationships
+        anchors = await self.supermemory.search(
+            query, 
+            limit=self.settings.max_anchors,
+            include_related=True
+        )
         
         if not anchors:
             return None
         
-        # Look for memories with graph relationships
-        all_related = []
+        # Categorize anchors by similarity
+        echo_chamber_anchors = [
+            a for a in anchors 
+            if a.similarity >= self.settings.max_similarity_threshold
+        ]
+        sweet_spot_anchors = [
+            a for a in anchors 
+            if self.settings.min_similarity_threshold <= a.similarity < self.settings.max_similarity_threshold
+        ]
         
-        for anchor in anchors:
-            # Check if anchor has meaningful relationships already in context
+        # Graph Pivot: Get neighbors from echo chamber anchors
+        # These are too similar to show directly, but their connections are valuable
+        neighbors: list[Memory] = []
+        
+        if echo_chamber_anchors:
+            # Pivot to graph neighbors for echo chamber items
+            neighbor_tasks = [
+                self.supermemory.get_related(
+                    anchor.id,
+                    relationship_types=["derives", "extends", "contrast"]
+                )
+                for anchor in echo_chamber_anchors[:3]  # Limit to top 3
+            ]
+            
+            neighbor_results = await asyncio.gather(*neighbor_tasks)
+            for result in neighbor_results:
+                neighbors.extend(result)
+        
+        # Also check sweet spot anchors for graph relationships
+        for anchor in sweet_spot_anchors:
             if anchor.relationships:
-                # This anchor has graph connections - add it as an insight
-                for rel in anchor.relationships:
-                    rel_type = rel.get("type", "").replace("child_", "")
-                    if rel_type in ["derives", "extends", "updates"]:
-                        all_related.append(anchor)
-                        break
-            
-            # Also search for related memories via the anchor
-            related = await self.supermemory.get_related(
-                anchor.id,
-                relationship_types=["derives", "extends", "updates"]
-            )
-            all_related.extend(related)
+                # This anchor has graph connections - get related memories
+                related = await self.supermemory.get_related(
+                    anchor.id,
+                    relationship_types=["derives", "extends", "contrast"]
+                )
+                neighbors.extend(related)
         
-        # Return if we found graph-connected insights
-        if all_related:
-            # Deduplicate and score
-            seen_ids = set()
-            unique = []
-            for m in all_related:
-                if m.id not in seen_ids:
-                    seen_ids.add(m.id)
-                    unique.append(m)
-            
-            # Apply scoring
-            scored = self.scorer.filter_and_rank(unique, max_results=3)
-            return [item for item, _, _, _ in scored]
+        # Combine: sweet spot anchors + graph neighbors (NOT echo chamber anchors)
+        all_candidates = sweet_spot_anchors + neighbors
         
-        return None
+        if not all_candidates:
+            return None
+        
+        # Deduplicate by ID
+        seen_ids = set()
+        unique_candidates = []
+        for candidate in all_candidates:
+            if candidate.id not in seen_ids:
+                seen_ids.add(candidate.id)
+                unique_candidates.append(candidate)
+        
+        if not unique_candidates:
+            return None
+        
+        # Apply MMR doughnut scoring
+        scored = self.scorer.filter_and_rank(
+            unique_candidates, 
+            max_results=self.settings.max_suggestions
+        )
+        
+        return [item for item, _, _, _ in scored] if scored else None
     
     async def _check_vector(self, query: str) -> tuple[list[Memory], ConfidenceLevel]:
         """

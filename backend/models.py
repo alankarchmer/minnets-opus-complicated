@@ -49,6 +49,10 @@ class AnalyzeResponse(CamelModel):
     """Response containing suggestions."""
     suggestions: list[Suggestion]
     processing_time_ms: int
+    retrieval_path: Optional[str] = None  # graph, vector, web, graph_plus_web, vector_plus_web
+    confidence: Optional[str] = None  # high, medium, low
+    graph_insight: bool = False  # True if graph relationships were found
+    should_offer_web: bool = False  # True if UI should show "Search Web" button
 
 
 class SaveToMemoryRequest(CamelModel):
