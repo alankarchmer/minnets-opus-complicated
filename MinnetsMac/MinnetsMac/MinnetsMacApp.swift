@@ -18,6 +18,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var eventMonitor: Any?
+    private var onboardingWindow: NSWindow?
+    
+    // UserDefaults key for tracking onboarding completion
+    private let onboardingCompletedKey = "minnets.onboarding.completed"
     
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
@@ -25,26 +29,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setupPopover()
             setupGlobalShortcut()
             
-            // Check permissions before starting context capture
-            await checkPermissionsAndStart()
+            // Check if onboarding is needed
+            await checkPermissionsAndShowOnboardingIfNeeded()
         }
     }
     
-    private func checkPermissionsAndStart() async {
+    private func checkPermissionsAndShowOnboardingIfNeeded() async {
         print("\n")
         print("╔═══════════════════════════════════════════╗")
         print("║          MINNETS STARTING UP              ║")
-        print("║       (Permission checks DISABLED)        ║")
         print("╚═══════════════════════════════════════════╝")
         
-        print("\n🚀 Initializing context manager (skipping permission checks)...")
+        // Refresh permission status
+        await PermissionManager.shared.refreshAllPermissions()
         
-        // Initialize context manager directly - skip all permission prompts
-        _ = ContextManager.shared
+        let hasAllPermissions = PermissionManager.shared.hasAllPermissions
+        let onboardingCompleted = UserDefaults.standard.bool(forKey: onboardingCompletedKey)
         
-        print("✓ Context manager initialized")
-        print("✓ Backend check...")
+        print("📋 Permission status:")
+        print("   - Accessibility: \(PermissionManager.shared.accessibilityStatus.displayText)")
+        print("   - Screen Recording: \(PermissionManager.shared.screenRecordingStatus.displayText)")
+        print("   - Onboarding completed: \(onboardingCompleted)")
+        
+        if !hasAllPermissions || !onboardingCompleted {
+            print("🚀 Showing onboarding...")
+            showOnboardingWindow()
+        } else {
+            print("✅ All permissions granted, starting normally")
+            startContextCapture()
+        }
     }
+    
+    // MARK: - Onboarding Window
+    
+    private func showOnboardingWindow() {
+        // Close existing window if any
+        onboardingWindow?.close()
+        
+        let onboardingView = OnboardingView(onComplete: { [weak self] in
+            self?.completeOnboarding()
+        })
+        
+        let hostingController = NSHostingController(rootView: onboardingView)
+        
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Welcome to Minnets"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.setFrameAutosaveName("OnboardingWindow")
+        
+        // Make window visible and front
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        
+        onboardingWindow = window
+    }
+    
+    private func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: onboardingCompletedKey)
+        onboardingWindow?.close()
+        onboardingWindow = nil
+        
+        print("✅ Onboarding completed!")
+        startContextCapture()
+    }
+    
+    private func startContextCapture() {
+        print("🚀 Initializing context manager...")
+        _ = ContextManager.shared
+        print("✅ Context manager initialized")
+    }
+    
+    // MARK: - Menu Bar Setup
     
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -56,6 +113,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = image?.withSymbolConfiguration(config)
             button.action = #selector(togglePopover)
             button.target = self
+            
+            // Add right-click menu
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Show Panel", action: #selector(togglePopover), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Setup Permissions...", action: #selector(showPermissionSetup), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Quit Minnets", action: #selector(quitApp), keyEquivalent: "q"))
+            
+            statusItem?.menu = nil // Don't show menu on left click
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
     }
     
@@ -96,6 +164,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func togglePopover() {
         guard let button = statusItem?.button, let popover = popover else { return }
         
+        // Handle right-click to show menu
+        if let event = NSApp.currentEvent, event.type == .rightMouseUp {
+            showContextMenu()
+            return
+        }
+        
         if popover.isShown {
             popover.performClose(nil)
         } else {
@@ -104,6 +178,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Make the popover the key window
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+    
+    private func showContextMenu() {
+        guard let button = statusItem?.button else { return }
+        
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Show Panel", action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Setup Permissions...", action: #selector(showPermissionSetup), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit Minnets", action: #selector(quitApp), keyEquivalent: "q"))
+        
+        statusItem?.menu = menu
+        button.performClick(nil)
+        statusItem?.menu = nil
+    }
+    
+    @objc private func showPanel() {
+        guard let button = statusItem?.button, let popover = popover else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+    
+    @objc private func showPermissionSetup() {
+        // Reset onboarding completed flag and show onboarding again
+        UserDefaults.standard.set(false, forKey: onboardingCompletedKey)
+        showOnboardingWindow()
+    }
+    
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
     
     func updateMenuBarIcon(hasSuggestion: Bool) {

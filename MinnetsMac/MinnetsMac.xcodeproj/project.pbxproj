@@ -25,6 +25,7 @@
 		A10000010000000000000018 /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000018 /* PermissionManager.swift */; };
 		A10000010000000000000019 /* ScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000019 /* ScreenCapture.swift */; };
 		A10000010000000000000020 /* AppleScriptCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000020 /* AppleScriptCapture.swift */; };
+		A10000010000000000000021 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000021 /* OnboardingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 		A10000020000000000000018 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionManager.swift; sourceTree = "<group>"; };
 		A10000020000000000000019 /* ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCapture.swift; sourceTree = "<group>"; };
 		A10000020000000000000020 /* AppleScriptCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScriptCapture.swift; sourceTree = "<group>"; };
+		A10000020000000000000021 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A10000030000000000000001 /* MinnetsMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MinnetsMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -79,6 +81,7 @@
 				A10000020000000000000004 /* BackendClient.swift */,
 				A10000020000000000000007 /* ContextManager.swift */,
 				A10000020000000000000008 /* Models.swift */,
+				A10000020000000000000021 /* OnboardingView.swift */,
 				A10000050000000000000004 /* ContextCapture */,
 				A10000050000000000000005 /* Interruptibility */,
 				A10000050000000000000006 /* Feedback */,
@@ -215,6 +218,7 @@
 				A10000010000000000000018 /* PermissionManager.swift in Sources */,
 				A10000010000000000000019 /* ScreenCapture.swift in Sources */,
 				A10000010000000000000020 /* AppleScriptCapture.swift in Sources */,
+				A10000010000000000000021 /* OnboardingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -346,7 +350,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = V42J6M2483;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MinnetsMac/Info.plist;
@@ -360,8 +364,11 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.minnets.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -374,7 +381,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = V42J6M2483;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MinnetsMac/Info.plist;
@@ -388,8 +395,11 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.minnets.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -415,7 +425,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
 	};
 	rootObject = A10000090000000000000001 /* Project object */;
 }

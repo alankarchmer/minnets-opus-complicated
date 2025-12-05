@@ -12,8 +12,12 @@ class ContextManager: ObservableObject {
     @Published var lastCaptureTime: Date?
     @Published var isInShadowMode = true
     
-    private var captureTimer: Timer?
-    private var lastContextHash: Int = 0
+    // Proactive insight timer (30 seconds)
+    private var proactiveTimer: Timer?
+    private let proactiveInterval: TimeInterval = 30.0
+    
+    // Context switch detection
+    private var lastAppBundleId: String?
     private var lastCapturedContext: String = ""
     private var settings = MinnetsSettings.default
     
@@ -32,13 +36,14 @@ class ContextManager: ObservableObject {
     
     private init() {
         setupObservers()
+        setupAppSwitchDetection()
         
         // Check backend connectivity
         Task {
             await checkBackendConnection()
         }
         
-        startAutomaticCapture()
+        startProactiveInsights()
     }
     
     private func checkBackendConnection() async {
@@ -69,25 +74,58 @@ class ContextManager: ObservableObject {
             .store(in: &cancellables)
     }
     
-    // MARK: - Automatic Capture
+    // MARK: - App Switch Detection
     
-    func startAutomaticCapture() {
-        guard settings.autoCapture else { return }
+    private func setupAppSwitchDetection() {
+        // Watch for app activation changes
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            
+            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                let newBundleId = app.bundleIdentifier
+                let appName = app.localizedName ?? "Unknown"
+                
+                // Detect context switch (different app)
+                if newBundleId != self.lastAppBundleId {
+                    print("🔄 Context switch detected: \(self.lastAppBundleId ?? "none") → \(newBundleId ?? "unknown")")
+                    self.lastAppBundleId = newBundleId
+                    
+                    // Trigger capture on app switch
+                    Task { @MainActor in
+                        await self.captureAndAnalyze()
+                    }
+                }
+            }
+        }
         
-        captureTimer?.invalidate()
-        captureTimer = Timer.scheduledTimer(
-            withTimeInterval: settings.captureIntervalSeconds,
+        // Initialize with current app
+        lastAppBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+    
+    // MARK: - Proactive Insights (30 second timer)
+    
+    func startProactiveInsights() {
+        proactiveTimer?.invalidate()
+        proactiveTimer = Timer.scheduledTimer(
+            withTimeInterval: proactiveInterval,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
-                await self?.captureAndAnalyzeIfChanged()
+                print("⏰ Proactive insight timer fired (every 30s)")
+                await self?.captureAndAnalyze()
             }
         }
+        print("✅ Proactive insights started (every \(Int(proactiveInterval))s)")
     }
     
-    func stopAutomaticCapture() {
-        captureTimer?.invalidate()
-        captureTimer = nil
+    func stopProactiveInsights() {
+        proactiveTimer?.invalidate()
+        proactiveTimer = nil
+        print("⏹️ Proactive insights stopped")
     }
     
     // MARK: - Context Capture with Interruptibility
@@ -239,36 +277,6 @@ class ContextManager: ObservableObject {
             
         } catch {
             print("❌ Analysis error: \(error)")
-        }
-    }
-    
-    private func captureAndAnalyzeIfChanged() async {
-        // Get current context hash to check if it changed significantly
-        let frontmostApp = NSWorkspace.shared.frontmostApplication
-        currentAppName = frontmostApp?.localizedName
-        
-        var capturedText: String?
-        
-        // Try accessibility first
-        if let (text, _) = accessibilityCapture.captureFromFrontmostWindow() {
-            capturedText = text
-        } else if let (text, _) = await screenCapture.captureScreen() {
-            // Fallback to screen capture
-            capturedText = text
-        }
-        
-        guard let text = capturedText else { 
-            // Silent fail for periodic checks - don't spam logs
-            return 
-        }
-        
-        let newHash = text.hashValue
-        let hashDiff = abs(newHash - lastContextHash)
-        
-        // Only analyze if context changed significantly
-        if hashDiff > 1000 || lastContextHash == 0 {
-            lastContextHash = newHash
-            await captureAndAnalyze()
         }
     }
     
