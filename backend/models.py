@@ -22,7 +22,7 @@ class CamelModel(BaseModel):
 class SuggestionSource(str, Enum):
     SUPERMEMORY = "supermemory"
     WEB_SEARCH = "web_search"
-    COMBINED = "combined"
+    ORTHOGONAL = "orthogonal"  # Cross-domain serendipitous discovery
 
 
 class Suggestion(CamelModel):
@@ -81,3 +81,42 @@ class SearchResult(BaseModel):
     text: str
     score: float
     published_date: Optional[str] = None
+
+
+class VibeProfile(BaseModel):
+    """
+    Abstract emotional/aesthetic profile extracted from content.
+    Used for cross-domain serendipitous matching.
+    
+    The key insight: Instead of matching content by topic similarity,
+    match by the *type of person* who would appreciate it.
+    """
+    # Emotional signatures - how does this content "feel"?
+    emotional_signatures: list[str] = Field(
+        default_factory=list,
+        description="Abstract feelings: melancholy, chaotic, intimate, precise, raw, playful, etc."
+    )
+    
+    # Archetype description - who appreciates this?
+    archetype: str = Field(
+        default="",
+        description="The type of person who values this: 'Someone who finds beauty in imperfection...'"
+    )
+    
+    # Cross-domain suggestions - what else would this person love?
+    cross_domain_interests: list[str] = Field(
+        default_factory=list,
+        description="Unrelated domains/things this archetype would appreciate"
+    )
+    
+    # Anti-patterns - what this is NOT (helps with orthogonal projection)
+    anti_patterns: list[str] = Field(
+        default_factory=list,
+        description="What this aesthetic rejects: 'polished', 'corporate', 'mass-produced'"
+    )
+    
+    # Original domain for cross-domain search
+    source_domain: str = Field(
+        default="",
+        description="The domain this vibe was extracted from: 'pottery', 'architecture', etc."
+    )

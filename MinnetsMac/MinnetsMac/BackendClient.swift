@@ -104,7 +104,10 @@ actor BackendClient {
         }
     }
     
-    func healthCheck() async -> Bool {
+    /// Checks if the backend server is healthy and reachable
+    /// - Returns: `true` if server responds with 200 OK
+    /// - Throws: `BackendError` if the health check fails
+    func healthCheck() async throws -> Bool {
         let endpoint = baseURL.appendingPathComponent("/health")
         
         var request = URLRequest(url: endpoint)
@@ -115,10 +118,21 @@ actor BackendClient {
             let (_, response) = try await session.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
-                return false
+                throw BackendError.invalidResponse
             }
             
             return httpResponse.statusCode == 200
+        } catch let error as BackendError {
+            throw error
+        } catch {
+            throw BackendError.networkError(error)
+        }
+    }
+    
+    /// Non-throwing version for convenience - returns false on any error
+    func isHealthy() async -> Bool {
+        do {
+            return try await healthCheck()
         } catch {
             return false
         }

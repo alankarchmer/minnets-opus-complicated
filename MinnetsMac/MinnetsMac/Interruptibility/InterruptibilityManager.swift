@@ -46,27 +46,21 @@ class InterruptibilityManager: ObservableObject {
         let (confused, signal, confusionScore) = confusionDetector.detectConfusion()
         
         if !confused {
-            // No confusion signal - don't interrupt unless bandit strongly suggests
+            // RELAXED FOR TESTING: Allow proactive suggestions even without confusion
+            // Original threshold was 0.8, now allowing with much lower bar
             let banditScore = await bandit.shouldInterrupt(
                 context: context,
                 confusionSignal: nil,
                 confusionScore: 0
             )
             
-            if banditScore > 0.8 {
-                return InterruptDecision(
-                    shouldInterrupt: true,
-                    confidence: banditScore,
-                    reason: "Bandit override: User historically likes proactive suggestions here",
-                    layer: .bandit
-                )
-            }
-            
+            // Always allow proactive suggestions for testing
+            // TODO: Restore stricter logic after testing
             return InterruptDecision(
-                shouldInterrupt: false,
-                confidence: 1.0 - banditScore,
-                reason: "No confusion signal detected",
-                layer: .confusionDetector
+                shouldInterrupt: true,
+                confidence: max(0.6, banditScore),
+                reason: "Proactive suggestion (testing mode - confusion not required)",
+                layer: .bandit
             )
         }
         

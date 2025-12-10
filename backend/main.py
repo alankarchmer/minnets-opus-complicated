@@ -1,20 +1,13 @@
-import asyncio
 import time
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Union
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from models import (
     AnalyzeRequest, 
     AnalyzeResponse, 
-    Suggestion,
-    SuggestionSource,
-    Memory,
-    SearchResult,
     SaveToMemoryRequest
 )
 from retrieval.exa_search import ExaSearchClient
@@ -42,14 +35,15 @@ async def lifespan(app: FastAPI):
     supermemory_client = SupermemoryClient()
     synthesizer = OpenAISynthesizer()
     scorer = RetrievalScorer()
-    cascade_router = CascadeRouter()
+    cascade_router = CascadeRouter(synthesizer=synthesizer)
     
     print("🧠 Minnets backend started")
-    print("   Using CascadeRouter: Graph Pivot → Vector → Web")
+    print("   Using CascadeRouter: Orthogonal → Graph Pivot → Vector → Web")
+    print("   🎲 Orthogonal Search: noise injection, archetype bridge, cross-domain vibe")
     print("   Graph Pivot: Echo chamber filter + neighbor pivoting")
     print("   Using Exa.ai for web search (with redundancy filtering)")
     print("   Using Supermemory for knowledge base")
-    print("   Using OpenAI for synthesis")
+    print("   Using OpenAI for synthesis + vibe extraction")
     yield
     
     await cascade_router.close()
@@ -146,10 +140,18 @@ async def analyze_context(request: AnalyzeRequest) -> AnalyzeResponse:
         search_query = " ".join(concepts[:3])
         print(f"   🔍 Searching for: '{search_query}'")
         
+        # Get orthogonal search setting from config
+        settings = get_settings()
+        enable_orthogonal = settings.orthogonal_enabled
+        
+        if enable_orthogonal:
+            print("   🎲 Orthogonal search enabled - looking for cross-domain serendipity")
+        
         # Try knowledge base first with cascade router
         cascade_result = await cascade_router.route(
             query=search_query,
-            context=context
+            context=context,
+            enable_orthogonal=enable_orthogonal
         )
         
         print(f"   Path: {cascade_result.path.value}, Confidence: {cascade_result.confidence.value}")
@@ -313,6 +315,156 @@ async def test_tangential_extraction(context: str = ""):
         return {"error": str(e)}
 
 
+@app.post("/test-orthogonal")
+async def test_orthogonal_search(context: str = ""):
+    """
+    Test endpoint to compare standard vs orthogonal retrieval.
+    
+    Shows side-by-side comparison of:
+    - Standard tangential search results
+    - Orthogonal search results (noise injection, archetype bridge, cross-domain)
+    - Vibe profile extracted from context
+    
+    This demonstrates the "tangential leap" capability - finding content that
+    would delight the same TYPE OF PERSON, not just similar content.
+    """
+    if not context:
+        # Default test case: wabi-sabi pottery (great for cross-domain vibes)
+        context = """Wabi-sabi - Wikipedia
+        
+        In traditional Japanese aesthetics, wabi-sabi (侘び寂び) is a world view 
+        centered on the acceptance of transience and imperfection. The aesthetic 
+        is sometimes described as one of appreciating beauty that is "imperfect, 
+        impermanent, and incomplete" in nature.
+        
+        Characteristics of wabi-sabi aesthetics and principles include asymmetry, 
+        roughness, simplicity, economy, austerity, modesty, intimacy, and the 
+        appreciation of both natural objects and the forces of nature.
+        
+        Wabi-sabi can change our perception of the world to the point where a chip 
+        or crack in a vase makes it more interesting and gives the object a 
+        greater meditative value. Similarly, peeling bark, rust, and other marks 
+        of aging become valued."""
+    
+    print(f"\n🎲 Testing orthogonal search...")
+    start_time = time.time()
+    
+    try:
+        # Step 1: Extract vibe profile
+        print("   Extracting vibe profile...")
+        vibe = await synthesizer.extract_vibe(context, "Test")
+        
+        # Step 2: Extract tangential concepts for standard search
+        concepts = await synthesizer.extract_concepts(context, "Test")
+        search_query = " ".join(concepts[:3]) if concepts else "aesthetics philosophy"
+        
+        # Step 3: Run standard search
+        print(f"   Standard search: '{search_query}'")
+        standard_results = await exa_client.search(search_query, num_results=3)
+        
+        # Step 4: Run orthogonal search (all strategies)
+        print("   Running orthogonal search strategies...")
+        orthogonal_result = await cascade_router.route_orthogonal_only(
+            context=context,
+            query=search_query
+        )
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        # Format results for comparison
+        return {
+            "processing_time_ms": processing_time,
+            
+            # Vibe Profile - the "type of person" extracted
+            "vibe_profile": {
+                "emotional_signatures": vibe.emotional_signatures,
+                "archetype": vibe.archetype,
+                "cross_domain_interests": vibe.cross_domain_interests,
+                "anti_patterns": vibe.anti_patterns,
+                "source_domain": vibe.source_domain
+            },
+            
+            # Standard search - what tangential concepts found
+            "standard_search": {
+                "query": search_query,
+                "tangential_concepts": concepts,
+                "results": [
+                    {
+                        "title": r.title,
+                        "url": r.url,
+                        "text_preview": r.text[:300] + "..." if len(r.text) > 300 else r.text
+                    }
+                    for r in standard_results
+                ]
+            },
+            
+            # Orthogonal search - cross-domain serendipity
+            "orthogonal_search": {
+                "path": orthogonal_result.path.value,
+                "metadata": orthogonal_result.orthogonal_metadata,
+                "results": [
+                    {
+                        "title": r.title,
+                        "url": r.url,
+                        "text_preview": r.text[:300] + "..." if len(r.text) > 300 else r.text
+                    }
+                    for r in orthogonal_result.items
+                ] if orthogonal_result.items else []
+            },
+            
+            # Key insight for user
+            "insight": f"Standard search finds content ABOUT {vibe.source_domain or 'the topic'}. "
+                      f"Orthogonal search finds content that would delight someone who values: "
+                      f"{', '.join(vibe.emotional_signatures[:3]) if vibe.emotional_signatures else 'similar aesthetics'}."
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
+@app.post("/test-vibe")
+async def test_vibe_extraction(context: str = ""):
+    """
+    Test endpoint to see the full vibe profile extracted from content.
+    
+    The vibe profile is the key to cross-domain serendipity - it captures
+    the TYPE OF PERSON who appreciates this content, not just the topic.
+    """
+    if not context:
+        context = """Pep Guardiola - Wikipedia
+        Josep "Pep" Guardiola Sala is a Spanish professional football manager 
+        and former player who is the manager of Manchester City. He is one of 
+        the most successful managers in football history, having won multiple 
+        league titles and Champions League trophies with Barcelona, Bayern Munich, 
+        and Manchester City.
+        
+        Guardiola is known for his tactical innovations, particularly his use of 
+        positional play, high pressing, and building from the back. His teams 
+        are characterized by fluid passing, constant movement, and dominating 
+        possession."""
+    
+    print(f"\n🎭 Testing vibe extraction...")
+    
+    try:
+        vibe = await synthesizer.extract_vibe(context, "Test")
+        
+        return {
+            "vibe_profile": {
+                "emotional_signatures": vibe.emotional_signatures,
+                "archetype": vibe.archetype,
+                "cross_domain_interests": vibe.cross_domain_interests,
+                "anti_patterns": vibe.anti_patterns,
+                "source_domain": vibe.source_domain
+            },
+            "explanation": "This vibe profile captures WHO would appreciate this content. "
+                          "Cross-domain interests show what else they might love."
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/save-to-memory")
 async def save_to_memory(request: SaveToMemoryRequest):
     """
@@ -371,20 +523,6 @@ async def save_to_memory(request: SaveToMemoryRequest):
             "status": "error", 
             "message": str(e)
         }
-
-
-@app.post("/feedback")
-async def record_feedback(
-    suggestion_id: str,
-    helpful: bool,
-    action: str = None  # "dismissed", "saved", "clicked"
-):
-    """
-    Record user feedback on suggestions.
-    This can be used to improve retrieval over time.
-    """
-    # TODO: Implement feedback storage and learning
-    return {"status": "recorded", "suggestion_id": suggestion_id}
 
 
 if __name__ == "__main__":

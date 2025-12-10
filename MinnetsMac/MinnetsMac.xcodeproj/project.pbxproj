@@ -12,7 +12,6 @@
 		A10000010000000000000003 /* SuggestionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000003 /* SuggestionCard.swift */; };
 		A10000010000000000000004 /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000004 /* BackendClient.swift */; };
 		A10000010000000000000005 /* AccessibilityCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000005 /* AccessibilityCapture.swift */; };
-		A10000010000000000000006 /* OCRCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000006 /* OCRCapture.swift */; };
 		A10000010000000000000007 /* ContextManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000007 /* ContextManager.swift */; };
 		A10000010000000000000008 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000008 /* Models.swift */; };
 		A10000010000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000009 /* Assets.xcassets */; };
@@ -26,6 +25,7 @@
 		A10000010000000000000019 /* ScreenCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000019 /* ScreenCapture.swift */; };
 		A10000010000000000000020 /* AppleScriptCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000020 /* AppleScriptCapture.swift */; };
 		A10000010000000000000021 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000021 /* OnboardingView.swift */; };
+		A10000010000000000000022 /* BrowserURLCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000022 /* BrowserURLCapture.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,7 +34,6 @@
 		A10000020000000000000003 /* SuggestionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuggestionCard.swift; sourceTree = "<group>"; };
 		A10000020000000000000004 /* BackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendClient.swift; sourceTree = "<group>"; };
 		A10000020000000000000005 /* AccessibilityCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityCapture.swift; sourceTree = "<group>"; };
-		A10000020000000000000006 /* OCRCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRCapture.swift; sourceTree = "<group>"; };
 		A10000020000000000000007 /* ContextManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextManager.swift; sourceTree = "<group>"; };
 		A10000020000000000000008 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A10000020000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -50,6 +49,7 @@
 		A10000020000000000000019 /* ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCapture.swift; sourceTree = "<group>"; };
 		A10000020000000000000020 /* AppleScriptCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScriptCapture.swift; sourceTree = "<group>"; };
 		A10000020000000000000021 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		A10000020000000000000022 /* BrowserURLCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserURLCapture.swift; sourceTree = "<group>"; };
 		A10000030000000000000001 /* MinnetsMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MinnetsMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -104,10 +104,10 @@
 			isa = PBXGroup;
 			children = (
 				A10000020000000000000005 /* AccessibilityCapture.swift */,
-				A10000020000000000000006 /* OCRCapture.swift */,
+				A10000020000000000000020 /* AppleScriptCapture.swift */,
+				A10000020000000000000022 /* BrowserURLCapture.swift */,
 				A10000020000000000000018 /* PermissionManager.swift */,
 				A10000020000000000000019 /* ScreenCapture.swift */,
-				A10000020000000000000020 /* AppleScriptCapture.swift */,
 			);
 			path = ContextCapture;
 			sourceTree = "<group>";
@@ -206,7 +206,6 @@
 				A10000010000000000000003 /* SuggestionCard.swift in Sources */,
 				A10000010000000000000004 /* BackendClient.swift in Sources */,
 				A10000010000000000000005 /* AccessibilityCapture.swift in Sources */,
-				A10000010000000000000006 /* OCRCapture.swift in Sources */,
 				A10000010000000000000007 /* ContextManager.swift in Sources */,
 				A10000010000000000000008 /* Models.swift in Sources */,
 				A10000010000000000000012 /* FlowStateGate.swift in Sources */,
@@ -219,6 +218,7 @@
 				A10000010000000000000019 /* ScreenCapture.swift in Sources */,
 				A10000010000000000000020 /* AppleScriptCapture.swift in Sources */,
 				A10000010000000000000021 /* OnboardingView.swift in Sources */,
+				A10000010000000000000022 /* BrowserURLCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

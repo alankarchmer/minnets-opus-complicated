@@ -1,4 +1,3 @@
-import os
 from exa_py import Exa
 from typing import Optional
 

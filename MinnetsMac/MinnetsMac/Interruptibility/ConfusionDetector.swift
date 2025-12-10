@@ -219,17 +219,21 @@ class ConfusionDetector: ObservableObject {
     private func startMonitoring() {
         // Monitor mouse movement
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
-            self?.recordMouseMove()
+            Task { @MainActor in
+                self?.recordMouseMove()
+            }
         }
         
         // Monitor keystrokes for error rate
         keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 51 {  // Backspace
-                self?.recordKeystroke(.backspace)
-            } else if event.keyCode == 36 {  // Enter
-                self?.recordKeystroke(.enter)
-            } else if event.characters?.isEmpty == false {
-                self?.recordKeystroke(.character)
+            Task { @MainActor in
+                if event.keyCode == 51 {  // Backspace
+                    self?.recordKeystroke(.backspace)
+                } else if event.keyCode == 36 {  // Enter
+                    self?.recordKeystroke(.enter)
+                } else if event.characters?.isEmpty == false {
+                    self?.recordKeystroke(.character)
+                }
             }
         }
         
@@ -239,33 +243,40 @@ class ConfusionDetector: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-               let bundleId = app.bundleIdentifier {
-                self?.recordAppSwitch(to: bundleId)
+            Task { @MainActor in
+                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                   let bundleId = app.bundleIdentifier {
+                    self?.recordAppSwitch(to: bundleId)
+                }
             }
         }
     }
     
-    private func updateConfusionStatus() {
-        let (detected, signal, score) = detectConfusion()
-        
-        DispatchQueue.main.async {
-            self.confusionSignal = detected ? signal : nil
-            self.confusionScore = score
-        }
-    }
-    
-    deinit {
+    /// Stops all monitoring - call during app termination if needed
+    func stopMonitoring() {
         if let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)
+            mouseMonitor = nil
         }
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
         }
         if let observer = appObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            appObserver = nil
         }
         stareTimer?.invalidate()
+        stareTimer = nil
+        
+        appSwitchTimestamps.removeAll()
+        recentKeystrokes.removeAll()
+    }
+    
+    private func updateConfusionStatus() {
+        let (detected, signal, score) = detectConfusion()
+        confusionSignal = detected ? signal : nil
+        confusionScore = score
     }
 }
 

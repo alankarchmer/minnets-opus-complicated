@@ -33,8 +33,7 @@ class RetrievalScorer:
     
     def apply_mmr_scoring(
         self, 
-        items: list[Union[Memory, SearchResult]], 
-        context_similarity: float = None
+        items: list[Union[Memory, SearchResult]]
     ) -> list[tuple[Union[Memory, SearchResult], float, float, float]]:
         """
         Apply MMR Doughnut scoring to a list of items.

@@ -7,5 +7,7 @@ supermemory
 pydantic==2.6.0
 pydantic-settings==2.1.0
 python-dotenv==1.0.1
-numpy==1.26.3
 
+# Testing
+pytest==8.0.0
+pytest-asyncio==0.23.5

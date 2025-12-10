@@ -94,6 +94,7 @@ struct SuggestionCard: View {
         case .supermemory: return .cyan
         case .webSearch: return .orange
         case .combined: return .purple
+        case .orthogonal: return .pink
         }
     }
     

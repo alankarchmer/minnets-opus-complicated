@@ -8,21 +8,23 @@ import AppKit
 class ShadowModeManager: ObservableObject {
     static let shared = ShadowModeManager()
     
-    @Published var isActive: Bool = true
-    @Published var interactionsRemaining: Int = 50
+    // RELAXED FOR TESTING: Shadow mode disabled so suggestions actually show
+    // TODO: Restore to true and 50 after testing
+    @Published var isActive: Bool = false
+    @Published var interactionsRemaining: Int = 0
     
     // Shadow suggestions we would have shown
     private var shadowQueue: [ShadowSuggestion] = []
     private let maxQueueSize = 20
     
     // Browser/search monitoring
-    private var urlObserver: NSObjectProtocol?
-    private var lastCheckedTime = Date()
+    private var searchMonitorTimer: Timer?
     
     private init() {
-        Task {
-            isActive = await ContextualBandit.shared.isInShadowMode()
-        }
+        // TESTING: Force shadow mode OFF - don't even check the bandit
+        // TODO: Restore to check ContextualBandit.shared.isInShadowMode() after testing
+        isActive = false
+        print("👻 ShadowModeManager initialized (isActive: \(isActive))")
         setupSearchMonitoring()
     }
     
@@ -87,7 +89,7 @@ class ShadowModeManager: ObservableObject {
     
     private func setupSearchMonitoring() {
         // Monitor for browser activity that might indicate searching
-        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        searchMonitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkForSearchActivity()
             }
@@ -97,77 +99,20 @@ class ShadowModeManager: ObservableObject {
     private func checkForSearchActivity() {
         guard isActive else { return }
         
-        // Check if user is in a browser
-        guard let frontApp = NSWorkspace.shared.frontmostApplication,
-              let bundleId = frontApp.bundleIdentifier else { return }
-        
-        let browserBundles = ["com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox", "com.brave.Browser"]
-        
-        guard browserBundles.contains(where: { bundleId.contains($0) }) else { return }
+        // Check if user is in a browser using shared utility
+        guard BrowserURLCapture.isBrowserActive() else { return }
         
         // Try to get URL/search from browser
-        if let searchQuery = getActiveSearchQuery() {
+        if let url = BrowserURLCapture.getActiveURL(),
+           let searchQuery = BrowserURLCapture.extractSearchQuery(from: url) {
             checkSearchMatch(query: searchQuery)
         }
     }
     
-    private func getActiveSearchQuery() -> String? {
-        // Use AppleScript to get browser URL/title
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return nil }
-        
-        var script: String
-        
-        if frontApp.bundleIdentifier?.contains("Safari") == true {
-            script = """
-            tell application "Safari"
-                if (count of windows) > 0 then
-                    return URL of current tab of front window
-                end if
-            end tell
-            """
-        } else if frontApp.bundleIdentifier?.contains("Chrome") == true {
-            script = """
-            tell application "Google Chrome"
-                if (count of windows) > 0 then
-                    return URL of active tab of front window
-                end if
-            end tell
-            """
-        } else {
-            return nil
-        }
-        
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            let result = appleScript.executeAndReturnError(&error)
-            if let url = result.stringValue {
-                return extractSearchQueryFromURL(url)
-            }
-        }
-        
-        return nil
-    }
-    
-    private func extractSearchQueryFromURL(_ url: String) -> String? {
-        // Extract search query from common search engines
-        guard let urlComponents = URLComponents(string: url) else { return nil }
-        
-        let searchParams = ["q", "query", "search", "p"]
-        
-        for param in searchParams {
-            if let value = urlComponents.queryItems?.first(where: { $0.name == param })?.value {
-                return value
-            }
-        }
-        
-        // Also check if it's a Google/Bing/DuckDuckGo search
-        let searchHosts = ["google.com", "bing.com", "duckduckgo.com", "search.yahoo.com"]
-        if let host = urlComponents.host,
-           searchHosts.contains(where: { host.contains($0) }) {
-            return urlComponents.queryItems?.first(where: { $0.name == "q" })?.value
-        }
-        
-        return nil
+    /// Stops search monitoring - call when shadow mode ends
+    func stopMonitoring() {
+        searchMonitorTimer?.invalidate()
+        searchMonitorTimer = nil
     }
     
     // MARK: - Keyword Extraction
@@ -206,6 +151,7 @@ class ShadowModeManager: ObservableObject {
     private func exitShadowMode() {
         isActive = false
         shadowQueue.removeAll()
+        stopMonitoring()
         print("🌟 Exiting shadow mode - model is now calibrated!")
     }
 }

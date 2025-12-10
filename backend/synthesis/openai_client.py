@@ -3,7 +3,7 @@ from typing import Union
 import json
 import uuid
 
-from models import Memory, SearchResult, Suggestion, SuggestionSource
+from models import Memory, SearchResult, Suggestion, SuggestionSource, VibeProfile
 from config import get_settings
 
 
@@ -19,6 +19,8 @@ class OpenAISynthesizer:
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
         self.model = settings.openai_model
+        self.embedding_model = settings.openai_embedding_model
+        self.vibe_temperature = settings.orthogonal_vibe_temperature
     
     async def extract_concepts(self, context: str, app_name: str) -> list[str]:
         """
@@ -157,6 +159,189 @@ Return ONLY the subject, nothing else."""
                 seen.add(kw.lower())
                 unique.append(kw)
         return unique[:5]
+    
+    async def extract_vibe(self, context: str, app_name: str = "") -> VibeProfile:
+        """
+        Extract the abstract "vibe" of content for cross-domain serendipitous matching.
+        
+        This is the key to orthogonal search: instead of matching by topic,
+        we match by the TYPE OF PERSON who would appreciate this content.
+        
+        Returns:
+            VibeProfile with emotional signatures, archetype, cross-domain interests, and anti-patterns
+        """
+        system_prompt = """You are a cultural anthropologist and taste curator. Your job is to extract the ESSENCE of content - not what it's about, but what TYPE OF PERSON appreciates it and WHY.
+
+This enables cross-domain discovery: someone reading about wabi-sabi pottery might love a restaurant with the same "vibe" - unpolished, authentic, humble.
+
+Given content, extract:
+
+1. EMOTIONAL SIGNATURES (3-5 abstract feelings):
+   - How does this content/thing FEEL?
+   - Examples: melancholy, chaotic, intimate, clinical, playful, precise, raw, luxurious, humble, defiant, nostalgic, futuristic, cozy, stark
+
+2. ARCHETYPE (1-2 sentences):
+   - What type of person is drawn to this?
+   - Don't describe the content - describe the PERSON who values it
+   - Example: "Someone who finds beauty in imperfection and distrusts anything too polished. They prefer experiences that feel discovered rather than marketed."
+
+3. CROSS-DOMAIN INTERESTS (3-4 unrelated domains/things):
+   - What COMPLETELY DIFFERENT things would this person love?
+   - Bridge to other categories: food, music, travel, architecture, fashion, books, films
+   - Be specific and unexpected
+   - Example: For wabi-sabi pottery → "hole-in-the-wall restaurants with mismatched chairs", "ambient music with tape hiss", "brutalist architecture", "handwritten letters"
+
+4. ANTI-PATTERNS (2-3 things this aesthetic REJECTS):
+   - What would feel wrong to this person?
+   - Examples: "SEO-optimized", "influencer-approved", "mass-produced", "algorithm-recommended"
+
+5. SOURCE DOMAIN (1-2 words):
+   - What domain is this content from?
+   - Examples: "pottery", "football tactics", "software architecture", "investing"
+
+Return JSON:
+{
+    "emotional_signatures": ["signature1", "signature2", "signature3"],
+    "archetype": "Description of the type of person who values this...",
+    "cross_domain_interests": ["specific thing in domain1", "specific thing in domain2", "specific thing in domain3"],
+    "anti_patterns": ["thing1 this aesthetic rejects", "thing2"],
+    "source_domain": "the domain"
+}
+
+EXAMPLES:
+
+Content about: Wabi-sabi pottery and Japanese aesthetics
+{
+    "emotional_signatures": ["imperfect", "quiet", "handcrafted", "humble", "timeless"],
+    "archetype": "Someone who distrusts anything too polished or marketed. They seek experiences that feel discovered, not advertised. Values process over product, impermanence over permanence.",
+    "cross_domain_interests": ["Georgian restaurants with no online presence and handwritten menus", "field recordings with ambient noise", "indie bookstores in basements", "hand-stitched leather goods from unknown makers"],
+    "anti_patterns": ["SEO-optimized content", "Michelin-starred restaurants", "minimalist tech aesthetics"],
+    "source_domain": "ceramics"
+}
+
+Content about: Pep Guardiola's tactical philosophy
+{
+    "emotional_signatures": ["precise", "obsessive", "systematic", "elegant", "demanding"],
+    "archetype": "Someone who sees beauty in systems and patterns. They appreciate when complexity is made to look effortless. Obsessive about details that others don't notice.",
+    "cross_domain_interests": ["omakase restaurants with 20-course menus", "architecture by Tadao Ando", "jazz musicians who studied classical", "watchmaking documentaries"],
+    "anti_patterns": ["improvisation without structure", "good enough mentality", "anti-intellectual populism"],
+    "source_domain": "football tactics"
+}"""
+
+        user_prompt = f"""App: {app_name}
+
+Content to analyze:
+{context[:4000]}
+
+Extract the vibe profile - focus on the TYPE OF PERSON who appreciates this, not the content itself."""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=self.vibe_temperature,  # Higher temp for creative connections
+                max_tokens=500
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Handle potential markdown code blocks
+            if result.startswith("```"):
+                result = result.split("```")[1]
+                if result.startswith("json"):
+                    result = result[4:]
+            
+            data = json.loads(result)
+            
+            vibe = VibeProfile(
+                emotional_signatures=data.get("emotional_signatures", []),
+                archetype=data.get("archetype", ""),
+                cross_domain_interests=data.get("cross_domain_interests", []),
+                anti_patterns=data.get("anti_patterns", []),
+                source_domain=data.get("source_domain", "")
+            )
+            
+            print(f"   🎭 Vibe extracted:")
+            print(f"      Signatures: {vibe.emotional_signatures}")
+            print(f"      Archetype: {vibe.archetype[:80]}...")
+            print(f"      Cross-domain: {vibe.cross_domain_interests}")
+            
+            return vibe
+            
+        except Exception as e:
+            print(f"Vibe extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return empty vibe profile on error
+            return VibeProfile()
+    
+    async def get_embedding(self, text: str) -> list[float]:
+        """
+        Get OpenAI embedding for text.
+        Used for noise injection in orthogonal search.
+        """
+        try:
+            response = await self.client.embeddings.create(
+                model=self.embedding_model,
+                input=text[:8000]  # Limit input size
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Embedding error: {e}")
+            return []
+    
+    async def generate_archetype_query(self, vibe: VibeProfile, target_domain: str) -> str:
+        """
+        Generate a search query that bridges from the user's current vibe
+        to a completely different domain.
+        
+        This is the "archetype bridge" strategy: find what would delight
+        the same TYPE OF PERSON in a different category.
+        """
+        system_prompt = f"""You are crafting a search query to find {target_domain} that would delight a specific type of person.
+
+The query should:
+1. Target the {target_domain} domain specifically
+2. Capture the VIBE, not the original topic
+3. Be specific enough to find hidden gems, not mainstream recommendations
+4. Use emotional/aesthetic descriptors, not category keywords
+
+Return ONLY the search query, nothing else. Make it 10-20 words."""
+
+        user_prompt = f"""Find {target_domain} for this type of person:
+
+Archetype: {vibe.archetype}
+
+They appreciate: {', '.join(vibe.emotional_signatures)}
+
+They would reject: {', '.join(vibe.anti_patterns)}
+
+Cross-domain hints: {', '.join(vibe.cross_domain_interests)}
+
+Generate a search query to find {target_domain} they would love - something unexpected but resonant."""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.9,  # High creativity for unexpected connections
+                max_tokens=50
+            )
+            
+            query = response.choices[0].message.content.strip().strip('"')
+            print(f"   🌉 Archetype bridge query for {target_domain}: {query}")
+            return query
+            
+        except Exception as e:
+            print(f"Archetype query generation error: {e}")
+            # Fallback: combine vibe signatures with target domain
+            return f"{target_domain} {' '.join(vibe.emotional_signatures[:3])}"
     
     async def should_search_web(
         self, 

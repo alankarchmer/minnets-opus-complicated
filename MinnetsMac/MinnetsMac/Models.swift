@@ -29,12 +29,14 @@ enum SuggestionSource: String, Codable {
     case supermemory = "supermemory"
     case webSearch = "web_search"
     case combined = "combined"
+    case orthogonal = "orthogonal"
     
     var displayName: String {
         switch self {
         case .supermemory: return "Your Memory"
         case .webSearch: return "Web Search"
         case .combined: return "Memory + Web"
+        case .orthogonal: return "Serendipity"
         }
     }
     
@@ -43,6 +45,7 @@ enum SuggestionSource: String, Codable {
         case .supermemory: return "brain"
         case .webSearch: return "globe"
         case .combined: return "sparkles"
+        case .orthogonal: return "wand.and.stars"
         }
     }
 }
@@ -99,17 +102,5 @@ enum AppState: Equatable {
         case .error(let message): return "Error: \(message)"
         }
     }
-}
-
-// MARK: - Settings
-
-struct MinnetsSettings: Codable {
-    var captureIntervalSeconds: Double = 15.0
-    var minContextChangeThreshold: Double = 0.3
-    var autoCapture: Bool = true
-    var showNotifications: Bool = true
-    var maxSuggestions: Int = 3
-    
-    static let `default` = MinnetsSettings()
 }
 

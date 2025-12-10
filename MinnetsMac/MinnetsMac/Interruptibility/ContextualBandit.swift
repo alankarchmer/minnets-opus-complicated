@@ -13,7 +13,9 @@ actor ContextualBandit {
     private var rewards: [String: Double] = [:]
     
     // Shadow mode
-    private var shadowMode: Bool = true
+    // RELAXED FOR TESTING: Shadow mode disabled so suggestions actually show
+    // TODO: Restore to true after testing
+    private var shadowMode: Bool = false
     private var interactionCount: Int = 0
     private let shadowModeThreshold = 50
     
@@ -28,8 +30,11 @@ actor ContextualBandit {
             counts = state.counts
             rewards = state.rewards
             interactionCount = state.interactionCount
-            shadowMode = state.shadowMode
+            // TESTING: Force shadow mode OFF regardless of saved state
+            // TODO: Restore to state.shadowMode after testing
+            shadowMode = false
         }
+        print("🎰 ContextualBandit initialized (shadowMode: \(shadowMode))")
     }
     
     // MARK: - Public API

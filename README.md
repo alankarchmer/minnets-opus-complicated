@@ -7,6 +7,8 @@ Minnets watches what you're doing and surfaces relevant insights from your perso
 ## Key Features
 
 - **Proactive Suggestions**: No prompting required - insights appear when relevant
+- **Orthogonal Search**: Cross-domain serendipity - finds what the same *type of person* would love, not just similar content
+- **Vibe Extraction**: Extracts emotional signatures and archetypes to enable cross-domain matching
 - **Graph Pivot Retrieval**: Finds *connected but different* content, not just similar text
 - **Smart Interruptibility**: 3-layer system prevents annoying you during flow states
 - **Implicit Learning**: Learns your preferences from hover, expand, copy, dismiss signals
@@ -28,10 +30,19 @@ Minnets watches what you're doing and surfaces relevant insights from your perso
 │  (Menubar App)  │◀────│  (Local Server)  │◀────│  (Graph + RAG)  │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
         │                       │
-        │                       ▼
-        │               ┌──────────────────┐
-        │               │  OpenAI + Exa    │
-        │               └──────────────────┘
+        │         ┌─────────────┴─────────────┐
+        │         ▼                           ▼
+        │  ┌──────────────────┐     ┌──────────────────┐
+        │  │  OpenAI + Exa    │     │ Orthogonal Search│
+        │  │  (Synthesis)     │     │ (Serendipity)    │
+        │  └──────────────────┘     └──────────────────┘
+        │                                   │
+        │                           ┌───────┴───────┐
+        │                           ▼               ▼
+        │                    ┌────────────┐  ┌────────────┐
+        │                    │ Vibe       │  │ Archetype  │
+        │                    │ Extraction │  │ Bridge     │
+        │                    └────────────┘  └────────────┘
         ▼
 ┌─────────────────┐     ┌──────────────────┐
 │  Floating Panel │────▶│ Implicit Feedback│
@@ -61,14 +72,45 @@ Learns that:
 
 ## The Retrieval Strategy
 
-Traditional RAG shows you what's most similar to your context - but that's often redundant. Minnets uses a cascade architecture with tangential concept extraction:
+Traditional RAG shows you what's most similar to your context - but that's often redundant. Minnets uses a cascade architecture with **orthogonal search** and tangential concept extraction:
 
 ### Concept Extraction
 - Extracts **tangential concepts** (related but different topics)
 - Avoids searching for the main subject (user already has that)
 - Example: Reading about "Pep Guardiola" → search for "positional play tactics", not "Pep Guardiola"
 
-### Cascade Router (Graph → Vector → Web)
+### Orthogonal Search (Serendipity Engine)
+
+The key insight: **Standard search finds content ABOUT the same topic. Orthogonal search finds content that would delight the same TYPE OF PERSON.**
+
+Three strategies for "tangential leaps":
+
+1. **Vibe Extraction**: Extract abstract emotional signatures from content
+   - Emotional signatures: `["imperfect", "quiet", "handcrafted", "humble"]`
+   - Archetype: "Someone who distrusts anything too polished or marketed"
+   - Anti-patterns: What this aesthetic rejects
+
+2. **Archetype Bridge Search**: Map user vibes → archetype → what else that archetype loves
+   - User reading about wabi-sabi pottery
+   - System identifies: "People who value wabi-sabi seek 'un-designed' experiences"
+   - Searches for: restaurants, music, architecture with same vibe
+
+3. **Vector Noise Injection**: Perturb queries to land in adjacent semantic clusters
+   - Adds controlled semantic "noise" to explore nearby but different concepts
+   - Like taking a random walk from your query
+
+**Example:**
+- User reading about: Wabi-sabi pottery
+- Standard search finds: Japanese ceramics, pottery techniques
+- Orthogonal search finds: Georgian restaurant with no website and handwritten menu (same vibe: humble, authentic, discovered-not-advertised)
+
+### Cascade Router (Orthogonal → Graph → Vector → Web)
+
+0. **Orthogonal Check** (Enabled by default): Cross-domain serendipity
+   - Extract vibe profile from context
+   - Run noise injection, archetype bridge, cross-domain searches
+   - Find content that resonates with the same archetype
+   - Toggle via `ORTHOGONAL_ENABLED` env var or config
 
 1. **Graph Pivot Check**: Find graph-connected insights
    - Find anchors via vector search
@@ -162,7 +204,7 @@ Captures happen every 15 seconds when context changes significantly.
 
 ### Retrieval Pipeline
 
-The retrieval pipeline uses a **cascade architecture** with tangential concept extraction:
+The retrieval pipeline uses a **cascade architecture** with orthogonal search and tangential concept extraction:
 
 ```python
 # 1. Extract TANGENTIAL concepts (not the main subject)
@@ -172,8 +214,23 @@ The retrieval pipeline uses a **cascade architecture** with tangential concept e
 concepts = extract_tangential_concepts(screen_text)
 main_subject = extract_main_subject(screen_text)  # For redundancy filtering
 
-# 2. Cascade Router: Graph → Vector → Web
+# 2. Extract VIBE for cross-domain serendipity
+vibe = extract_vibe(screen_text)
+# Returns: emotional_signatures, archetype, cross_domain_interests, anti_patterns
+
+# 3. Cascade Router: Orthogonal → Graph → Vector → Web
 search_query = " ".join(concepts[:3])
+enable_orthogonal = settings.orthogonal_enabled  # True by default
+
+# Step 0: Orthogonal Check (Cross-domain Serendipity)
+if enable_orthogonal:
+    orthogonal_results = orthogonal_searcher.search_all_strategies(
+        context=screen_text,
+        original_query=search_query
+    )
+    # - Noise injection: perturbed query to adjacent clusters
+    # - Archetype bridge: what the same "type of person" loves elsewhere
+    # - Cross-domain: vibe projected into different categories
 
 # Step 1: Graph Pivot Check (Serendipity)
 graph_result = cascade_router.check_graph(query)
@@ -242,6 +299,40 @@ For the first 50 interactions, Minnets runs in "Shadow Mode":
 - If you manually search for something it would have suggested → massive positive signal
 - Calibrates the model without any annoyance
 
+## Testing Mode (Current Configuration)
+
+⚠️ **The interruptibility system is currently relaxed for testing.**
+
+By default, the strict interruptibility gates would block most proactive suggestions:
+- Confusion detection required (thrashing, staring, or high error rate)
+- Shadow mode hides suggestions for first 50 interactions
+
+**Current testing configuration:**
+- Proactive suggestions show every 30 seconds without requiring confusion signals
+- Shadow mode is disabled - suggestions display immediately
+- Only Layer 1 (FlowStateGate) still blocks during Zoom/Teams, fast typing, or presentations
+
+### Restoring Production Behavior
+
+Search for `TODO: Restore` in the codebase to find the three locations to change:
+
+1. **InterruptibilityManager.swift** - Restore confusion requirement:
+   ```swift
+   // Change from: always return shouldInterrupt: true
+   // Back to: require confusion OR bandit > 0.8
+   ```
+
+2. **ShadowModeManager.swift** - Re-enable shadow mode:
+   ```swift
+   @Published var isActive: Bool = true      // was false
+   @Published var interactionsRemaining: Int = 50  // was 0
+   ```
+
+3. **ContextualBandit.swift** - Re-enable shadow mode:
+   ```swift
+   private var shadowMode: Bool = true       // was false
+   ```
+
 ## Project Structure
 
 ```
@@ -272,14 +363,17 @@ minnets/
 ├── backend/                        # Python FastAPI
 │   ├── main.py                     # API endpoints
 │   ├── config.py                   # Settings from env
-│   ├── models.py                   # Pydantic models
+│   ├── models.py                   # Pydantic models (including VibeProfile)
 │   ├── retrieval/
 │   │   ├── supermemory.py          # Supermemory API client
 │   │   ├── exa_search.py           # Exa.ai web search
-│   │   ├── cascade_router.py       # Cascade: Graph → Vector → Web
+│   │   ├── cascade_router.py       # Cascade: Orthogonal → Graph → Vector → Web
+│   │   ├── orthogonal_search.py    # Serendipity: noise injection, archetype bridge, cross-domain
 │   │   └── scoring.py              # MMR + temporal scoring
-│   └── synthesis/
-│       └── openai_client.py        # GPT for extraction & synthesis
+│   ├── synthesis/
+│   │   └── openai_client.py        # GPT for extraction, synthesis & vibe extraction
+│   └── tests/
+│       └── test_api.py             # Comprehensive API tests
 │
 └── README.md
 ```
@@ -314,9 +408,9 @@ Analyze screen context and get suggestions.
     }
   ],
   "processingTimeMs": 1250,
-  "retrievalPath": "graph",
-  "confidence": "high",
-  "graphInsight": true,
+  "retrievalPath": "orthogonal",  // or "graph", "vector", "web"
+  "confidence": "medium",
+  "graphInsight": false,
   "shouldOfferWeb": false
 }
 ```
@@ -359,6 +453,40 @@ Test endpoint to verify Exa search is working.
 
 Test endpoint to see what tangential concepts are extracted from context.
 
+### `POST /test-orthogonal`
+
+Test endpoint to compare standard vs orthogonal retrieval. Shows side-by-side:
+- Standard tangential search results
+- Orthogonal search results (noise injection, archetype bridge, cross-domain)
+- Extracted vibe profile
+
+```json
+// Response
+{
+  "vibe_profile": {
+    "emotional_signatures": ["imperfect", "quiet", "handcrafted"],
+    "archetype": "Someone who distrusts anything too polished...",
+    "cross_domain_interests": ["Georgian restaurants with no website...", "ambient music with tape hiss..."],
+    "anti_patterns": ["SEO-optimized", "Michelin-starred"],
+    "source_domain": "ceramics"
+  },
+  "standard_search": {
+    "query": "Japanese aesthetics pottery techniques",
+    "results": [...]
+  },
+  "orthogonal_search": {
+    "path": "orthogonal",
+    "metadata": {"strategies_used": ["noise_injection", "archetype_bridge", "cross_domain"]},
+    "results": [...]
+  },
+  "insight": "Standard search finds content ABOUT ceramics. Orthogonal search finds content that would delight someone who values: imperfect, quiet, handcrafted."
+}
+```
+
+### `POST /test-vibe`
+
+Test endpoint to see the full vibe profile extracted from content.
+
 ### `GET /health`
 
 Health check endpoint.
@@ -378,7 +506,37 @@ HOST=127.0.0.1
 PORT=8000
 ```
 
+### Orthogonal Search Settings
+
+Orthogonal search is **enabled by default**. Configure in `config.py` or via environment:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ORTHOGONAL_ENABLED` | `true` | Enable cross-domain serendipity in `/analyze` |
+| `ORTHOGONAL_NOISE_SCALE` | `0.15` | Semantic noise level (0.1=close, 0.3=far) |
+| `ORTHOGONAL_ARCHETYPE_ENABLED` | `true` | Enable archetype-based bridging |
+| `ORTHOGONAL_VIBE_TEMPERATURE` | `0.8` | LLM temperature for vibe extraction |
+| `ORTHOGONAL_TARGET_DOMAINS` | `["restaurants", "music", ...]` | Domains for cross-domain search |
+
+## Testing
+
+Run the backend tests:
+
+```bash
+cd backend
+source venv/bin/activate
+pip install pytest pytest-asyncio
+pytest tests/test_api.py -v
+```
+
+Tests cover:
+- All API endpoints (`/health`, `/analyze`, `/search-web`, `/test-*`, `/save-to-memory`)
+- Pydantic models and validation
+- MMR doughnut scoring
+- Orthogonal search strategies
+- Cascade router paths
+
 ## License
 
-MIT
+Heath School
 

@@ -183,7 +183,9 @@ class FlowStateGate: ObservableObject {
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Only count character keys, not modifiers
             if event.characters?.isEmpty == false {
-                self?.recordKeyPress()
+                Task { @MainActor in
+                    self?.recordKeyPress()
+                }
             }
         }
         
@@ -193,26 +195,29 @@ class FlowStateGate: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateBlockStatus()
+            Task { @MainActor in
+                self?.updateBlockStatus()
+            }
         }
+    }
+    
+    /// Stops all monitoring - call during app termination if needed
+    func stopMonitoring() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        if let observer = appObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            appObserver = nil
+        }
+        keyPressTimestamps.removeAll()
     }
     
     private func updateBlockStatus() {
         let (blocked, reason) = shouldBlock()
-        
-        DispatchQueue.main.async {
-            self.isBlocked = blocked
-            self.blockReason = reason
-        }
-    }
-    
-    deinit {
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-        if let observer = appObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
-        }
+        isBlocked = blocked
+        blockReason = reason
     }
 }
 

@@ -3,7 +3,7 @@ import AppKit
 
 /// Captures screen content using AppleScript
 /// This approach often works better during development as it uses different permission mechanisms
-class AppleScriptCapture {
+final class AppleScriptCapture {
     
     /// Captures the frontmost window content using AppleScript
     /// For browsers, returns URL that backend can use to fetch content
@@ -26,15 +26,10 @@ class AppleScriptCapture {
             capturedText += "Window Title: \(title)\n"
         }
         
-        // For browsers, get the URL - this is the key info!
-        if let url = getBrowserURL(appName: appName) {
+        // For browsers, get the URL using shared utility
+        if let url = BrowserURLCapture.getActiveURL() {
             capturedText += "CURRENT_URL: \(url)\n"
             print("🍎 AppleScript: Got browser URL: \(url)")
-        }
-        
-        // Try to get selected text (user might have highlighted something)
-        if let selectedText = getSelectedText() {
-            capturedText += "\nSelected Text:\n\(selectedText)\n"
         }
         
         // Get the document content if available (for text editors)
@@ -43,12 +38,19 @@ class AppleScriptCapture {
         }
         
         // If we got nothing useful, return nil
-        if capturedText.isEmpty || (!capturedText.contains("CURRENT_URL") && capturedText.count < 50) {
-            print("🍎 AppleScript: No useful content captured")
+        // Note: If we have a URL, that's enough - backend will fetch the content
+        if capturedText.isEmpty {
+            print("🍎 AppleScript: No content captured")
             return nil
         }
         
-        print("🍎 AppleScript: Captured \(capturedText.count) chars")
+        let hasUrl = capturedText.contains("CURRENT_URL:")
+        if !hasUrl && capturedText.count < 50 {
+            print("🍎 AppleScript: Only \(capturedText.count) chars and no URL - not enough")
+            return nil
+        }
+        
+        print("🍎 AppleScript: Captured \(capturedText.count) chars (hasUrl: \(hasUrl))")
         return (capturedText, windowTitle)
     }
     
@@ -63,50 +65,6 @@ class AppleScriptCapture {
         end tell
         """
         return runAppleScript(script)
-    }
-    
-    private func getBrowserURL(appName: String) -> String? {
-        var script: String
-        
-        if appName.contains("Chrome") {
-            script = """
-            tell application "Google Chrome"
-                if (count of windows) > 0 then
-                    return URL of active tab of front window
-                end if
-            end tell
-            """
-        } else if appName.contains("Safari") {
-            script = """
-            tell application "Safari"
-                if (count of windows) > 0 then
-                    return URL of current tab of front window
-                end if
-            end tell
-            """
-        } else if appName.contains("Firefox") {
-            // Firefox doesn't support AppleScript well
-            return nil
-        } else if appName.contains("Arc") {
-            script = """
-            tell application "Arc"
-                if (count of windows) > 0 then
-                    return URL of active tab of front window
-                end if
-            end tell
-            """
-        } else {
-            return nil
-        }
-        
-        return runAppleScript(script)
-    }
-    
-    private func getSelectedText() -> String? {
-        // Try to get selected text via clipboard trick
-        // Save current clipboard, simulate Cmd+C, get clipboard, restore
-        // This is invasive so we skip it for now
-        return nil
     }
     
     private func getDocumentContent(appName: String) -> String? {

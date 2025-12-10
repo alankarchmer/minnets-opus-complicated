@@ -19,7 +19,6 @@ class ContextManager: ObservableObject {
     // Context switch detection
     private var lastAppBundleId: String?
     private var lastCapturedContext: String = ""
-    private var settings = MinnetsSettings.default
     
     // Core components
     private let appleScriptCapture = AppleScriptCapture()
@@ -44,6 +43,14 @@ class ContextManager: ObservableObject {
         }
         
         startProactiveInsights()
+        
+        // Fire initial capture after 5 seconds to give app time to initialize
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            Task { @MainActor in
+                print("🚀 Initial proactive check (5s after launch)")
+                await self?.captureAndAnalyze()
+            }
+        }
     }
     
     private func checkBackendConnection() async {
@@ -54,11 +61,13 @@ class ContextManager: ObservableObject {
             } else {
                 print("⚠️ Backend server responded but may not be healthy")
             }
-        } catch {
+        } catch let error as BackendError {
             print("❌ Backend server NOT reachable at http://127.0.0.1:8000")
             print("   Error: \(error.localizedDescription)")
             print("   💡 To start the backend:")
             print("      cd backend && source venv/bin/activate && python main.py")
+        } catch {
+            print("❌ Backend connection failed: \(error.localizedDescription)")
         }
     }
     
@@ -115,11 +124,16 @@ class ContextManager: ObservableObject {
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
-                print("⏰ Proactive insight timer fired (every 30s)")
+                let now = Date()
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss"
+                print("\n⏰ [\(formatter.string(from: now))] Proactive insight timer fired (every 30s)")
+                print("   Frontmost app: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown")")
                 await self?.captureAndAnalyze()
             }
         }
         print("✅ Proactive insights started (every \(Int(proactiveInterval))s)")
+        print("   Timer will fire at: \(Date().addingTimeInterval(proactiveInterval))")
     }
     
     func stopProactiveInsights() {
@@ -151,61 +165,17 @@ class ContextManager: ObservableObject {
         print("\n🔍 === Starting context capture\(forceAnalyze ? " (FORCED)" : "") ===")
         print("   Current app: \(currentAppName ?? "Unknown")")
         
-        // Try multiple capture methods in order of reliability
-        var capturedText: String?
-        var windowTitle: String?
-        
-        // Method 1: AppleScript (most reliable during development, no TCC issues)
-        print("   Trying AppleScript...")
-        if let (text, title) = appleScriptCapture.captureFromFrontmostWindow() {
-            capturedText = text
-            windowTitle = title
-            print("   ✓ Captured via AppleScript (\(text.count) chars)")
-        }
-        
-        // Method 2: Accessibility API (gives structured text)
-        if capturedText == nil || capturedText!.count < 100 {
-            print("   Trying Accessibility API...")
-            if let (text, title) = accessibilityCapture.captureFromFrontmostWindow() {
-                capturedText = text
-                windowTitle = title
-                print("   ✓ Captured via Accessibility API (\(text.count) chars)")
-            }
-        }
-        
-        // Method 3: ScreenCaptureKit + OCR (fallback)
-        if capturedText == nil || capturedText!.count < 100 {
-            print("   Trying ScreenCaptureKit + OCR...")
-            if let (ocrText, title) = await screenCapture.captureScreen() {
-                capturedText = ocrText
-                windowTitle = title
-                print("   ✓ Captured via ScreenCaptureKit + OCR (\(ocrText.count) chars)")
-            } else {
-                print("   ✗ ScreenCaptureKit capture also failed")
-            }
-        }
-        
-        guard let text = capturedText, !text.isEmpty else {
-            print("❌ No context captured from \(currentAppName ?? "app")")
-            print("   Check: Accessibility permission, Screen Recording permission")
-            print("   Note: Some apps (like Finder with no windows) don't have capturable content")
-            
-            // Post notification so UI can show error
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: .captureFailedNoPermissions,
-                    object: nil
-                )
-            }
+        // Step 1: Capture context using multiple methods
+        guard let captureResult = await captureContext() else {
+            notifyCaptureFailure()
             return
         }
         
-        lastCapturedContext = text
+        lastCapturedContext = captureResult.text
         
-        // Check interruptibility BEFORE making API call (skip if forced)
+        // Step 2: Check interruptibility (skip if forced)
         if !forceAnalyze {
-            let decision = await interruptibilityManager.shouldInterrupt(forContext: text)
-            
+            let decision = await interruptibilityManager.shouldInterrupt(forContext: captureResult.text)
             if !decision.shouldInterrupt {
                 print("🚫 Interrupt blocked: \(decision.reason)")
                 return
@@ -214,69 +184,152 @@ class ContextManager: ObservableObject {
             print("⚡ Bypassing interruptibility check (forced)")
         }
         
-        // Check if backend is available first
-        let isBackendAvailable = await backendClient.healthCheck()
-        if !isBackendAvailable {
+        // Step 3: Analyze and handle suggestions
+        await analyzeAndPresentSuggestions(
+            context: captureResult.text,
+            windowTitle: captureResult.windowTitle,
+            forceShow: forceAnalyze
+        )
+    }
+    
+    // MARK: - Context Capture Methods
+    
+    /// Result of context capture operation
+    private struct CaptureResult {
+        let text: String
+        let windowTitle: String
+        let method: CaptureMethod
+        
+        enum CaptureMethod: String {
+            case appleScript = "AppleScript"
+            case accessibility = "Accessibility API"
+            case screenCapture = "ScreenCaptureKit + OCR"
+        }
+    }
+    
+    /// Attempts to capture context using multiple methods in order of reliability
+    private func captureContext() async -> CaptureResult? {
+        // Method 1: AppleScript (most reliable during development, no TCC issues)
+        print("   Trying AppleScript...")
+        if let (text, title) = appleScriptCapture.captureFromFrontmostWindow() {
+            // Accept if we have a URL (backend will fetch content) OR enough text
+            let hasUrl = text.contains("CURRENT_URL:")
+            let hasEnoughText = text.count >= 100
+            
+            if hasUrl || hasEnoughText {
+                print("   ✓ Captured via AppleScript (\(text.count) chars, hasUrl: \(hasUrl))")
+                return CaptureResult(text: text, windowTitle: title, method: .appleScript)
+            } else {
+                print("   ⚠️ AppleScript captured \(text.count) chars but no URL - trying other methods")
+            }
+        }
+        
+        // Method 2: Accessibility API (gives structured text)
+        print("   Trying Accessibility API...")
+        if let (text, title) = accessibilityCapture.captureFromFrontmostWindow(), text.count >= 100 {
+            print("   ✓ Captured via Accessibility API (\(text.count) chars)")
+            return CaptureResult(text: text, windowTitle: title, method: .accessibility)
+        }
+        
+        // Method 3: ScreenCaptureKit + OCR (fallback)
+        print("   Trying ScreenCaptureKit + OCR...")
+        if let (ocrText, title) = await screenCapture.captureScreen(), !ocrText.isEmpty {
+            print("   ✓ Captured via ScreenCaptureKit + OCR (\(ocrText.count) chars)")
+            return CaptureResult(text: ocrText, windowTitle: title, method: .screenCapture)
+        }
+        
+        print("   ✗ All capture methods failed")
+        return nil
+    }
+    
+    /// Notifies UI that capture failed
+    private func notifyCaptureFailure() {
+        print("❌ No context captured from \(currentAppName ?? "app")")
+        print("   Check: Accessibility permission, Screen Recording permission")
+        print("   Note: Some apps (like Finder with no windows) don't have capturable content")
+        
+        NotificationCenter.default.post(name: .captureFailedNoPermissions, object: nil)
+    }
+    
+    // MARK: - Analysis Methods
+    
+    /// Analyzes context with backend and presents suggestions
+    private func analyzeAndPresentSuggestions(
+        context: String,
+        windowTitle: String,
+        forceShow: Bool
+    ) async {
+        // Check backend availability
+        guard await backendClient.isHealthy() else {
             print("❌ Backend server not available at http://127.0.0.1:8000")
             print("   💡 Start the backend: cd backend && source venv/bin/activate && python main.py")
             return
         }
         
-        // Analyze with backend
         print("📡 Sending to backend for analysis...")
-        print("   Context preview: \(String(text.prefix(100)))...")
+        print("   Context preview: \(String(context.prefix(100)))...")
         
         do {
             let suggestions = try await backendClient.analyze(
-                context: text,
+                context: context,
                 appName: currentAppName ?? "Unknown",
-                windowTitle: windowTitle ?? ""
+                windowTitle: windowTitle
             )
             
             print("📥 Backend returned \(suggestions.count) suggestions")
             
-            guard !suggestions.isEmpty else { 
+            guard !suggestions.isEmpty else {
                 print("   No suggestions returned from backend")
-                return 
-            }
-            
-            // Shadow Mode: Record but don't show (unless forced)
-            if shadowModeManager.isActive && !forceAnalyze {
-                for suggestion in suggestions {
-                    shadowModeManager.recordShadowSuggestion(suggestion, context: text)
-                }
-                print("👻 Shadow mode active: \(suggestions.count) suggestions recorded but not shown")
-                print("   Interactions remaining: \(shadowModeManager.interactionsRemaining)")
                 return
             }
             
-            // Normal mode (or forced): Show suggestions
-            print("✅ Showing \(suggestions.count) suggestions to user")
-            for (i, suggestion) in suggestions.enumerated() {
-                print("   \(i+1). \(suggestion.title)")
-            }
-            
-            self.currentSuggestions = suggestions
-            self.lastCaptureTime = Date()
-            
-            // Track that suggestions were shown
-            for suggestion in suggestions {
-                feedbackTracker.suggestionShown(suggestion, context: text)
-            }
-            
-            // Notify UI
-            NotificationCenter.default.post(
-                name: .newSuggestionsAvailable,
-                object: suggestions
-            )
-            
-            // Update menubar icon
-            if let appDelegate = NSApp.delegate as? AppDelegate {
-                appDelegate.updateMenuBarIcon(hasSuggestion: true)
+            // Handle shadow mode vs normal mode
+            print("   Shadow mode check: isActive=\(shadowModeManager.isActive), forceShow=\(forceShow)")
+            if shadowModeManager.isActive && !forceShow {
+                handleShadowModeSuggestions(suggestions, context: context)
+            } else {
+                print("   ➡️ Presenting suggestions to user (not in shadow mode or force show)")
+                presentSuggestions(suggestions, context: context)
             }
             
         } catch {
             print("❌ Analysis error: \(error)")
+        }
+    }
+    
+    /// Records suggestions in shadow mode without showing them
+    private func handleShadowModeSuggestions(_ suggestions: [Suggestion], context: String) {
+        for suggestion in suggestions {
+            shadowModeManager.recordShadowSuggestion(suggestion, context: context)
+        }
+        print("👻 Shadow mode active: \(suggestions.count) suggestions recorded but not shown")
+        print("   Interactions remaining: \(shadowModeManager.interactionsRemaining)")
+    }
+    
+    /// Presents suggestions to the user
+    private func presentSuggestions(_ suggestions: [Suggestion], context: String) {
+        print("🎉 Showing \(suggestions.count) suggestions to user!")
+        for (i, suggestion) in suggestions.enumerated() {
+            print("   \(i+1). \(suggestion.title)")
+            print("      Preview: \(String(suggestion.content.prefix(80)))...")
+        }
+        
+        currentSuggestions = suggestions
+        lastCaptureTime = Date()
+        
+        // Track that suggestions were shown
+        for suggestion in suggestions {
+            feedbackTracker.suggestionShown(suggestion, context: context)
+        }
+        
+        // Notify UI
+        print("📣 Posting .newSuggestionsAvailable notification...")
+        NotificationCenter.default.post(name: .newSuggestionsAvailable, object: suggestions)
+        
+        // Update menubar icon
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.updateMenuBarIcon(hasSuggestion: true)
+            print("📌 Menu bar icon updated to show suggestion indicator")
         }
     }
     
@@ -362,7 +415,7 @@ class ContextManager: ObservableObject {
         currentAppName = appName
         
         // Check if backend is available
-        let isBackendAvailable = await backendClient.healthCheck()
+        let isBackendAvailable = await backendClient.isHealthy()
         if !isBackendAvailable {
             print("❌ Backend server not available at http://127.0.0.1:8000")
             return

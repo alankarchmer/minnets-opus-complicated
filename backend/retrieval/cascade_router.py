@@ -1,7 +1,13 @@
 """
-Cascade Router: Graph Pivot → Vector → Web
+Cascade Router: Orthogonal → Graph Pivot → Vector → Web
 
-Combines the cascade architecture with the Graph Pivot strategy:
+Combines the cascade architecture with Orthogonal Search and Graph Pivot strategy:
+
+Orthogonal Search (Step 0 - Serendipity):
+- Extract "vibe" of content (emotional signatures, archetype)
+- Search via noise injection (adjacent semantic clusters)
+- Search via archetype bridging (what same type of person loves elsewhere)
+- Search via cross-domain projection (vibe in different categories)
 
 Graph Pivot (Step 1):
 - Find anchors via vector search
@@ -15,18 +21,22 @@ Cascade Fallback (Steps 2-3):
 """
 
 import asyncio
-from typing import Optional
+from typing import Optional, Union
 from enum import Enum
 
-from models import Memory, SearchResult, Suggestion, SuggestionSource
+from models import Memory, SearchResult, VibeProfile
 from retrieval.supermemory import SupermemoryClient
 from retrieval.exa_search import ExaSearchClient
 from retrieval.scoring import RetrievalScorer
+from retrieval.orthogonal_search import OrthogonalSearcher, OrthogonalResult
+from synthesis.openai_client import OpenAISynthesizer
 from config import get_settings
 
 
 class RetrievalPath(str, Enum):
     """Which retrieval path was used."""
+    ORTHOGONAL = "orthogonal"  # Serendipitous cross-domain discovery
+    ORTHOGONAL_PLUS_GRAPH = "orthogonal_plus_graph"
     GRAPH = "graph"
     VECTOR = "vector"
     WEB = "web"
@@ -49,18 +59,30 @@ class CascadeResult:
         path: RetrievalPath,
         confidence: ConfidenceLevel,
         graph_insight: bool = False,
-        should_offer_web: bool = False
+        should_offer_web: bool = False,
+        orthogonal_metadata: dict = None,
+        vibe_profile: VibeProfile = None
     ):
         self.items = items
         self.path = path
         self.confidence = confidence
         self.graph_insight = graph_insight
         self.should_offer_web = should_offer_web
+        # Orthogonal search metadata (strategies used, queries, etc.)
+        self.orthogonal_metadata = orthogonal_metadata or {}
+        # Extracted vibe profile for provenance transparency
+        self.vibe_profile = vibe_profile
 
 
 class CascadeRouter:
     """
-    Implements cascade architecture with Graph Pivot strategy.
+    Implements cascade architecture with Orthogonal Search and Graph Pivot strategy.
+    
+    Step 0: Orthogonal Search (Serendipity)
+            - Extract vibe (emotional signatures, archetype)
+            - Noise injection: perturb query to adjacent clusters
+            - Archetype bridge: find what same person type loves elsewhere
+            - Cross-domain: project vibe into different categories
     
     Step 1: Graph Pivot Check
             - Find anchors, filter echo chamber (>0.85 similarity)
@@ -76,21 +98,62 @@ class CascadeRouter:
     Step 3: Web Search - When local knowledge is insufficient
     """
     
-    def __init__(self):
+    def __init__(self, synthesizer: OpenAISynthesizer = None):
         self.supermemory = SupermemoryClient()
         self.exa = ExaSearchClient()
         self.scorer = RetrievalScorer()
         self.settings = get_settings()
+        self.synthesizer = synthesizer or OpenAISynthesizer()
+        self.orthogonal = OrthogonalSearcher(
+            exa_client=self.exa,
+            synthesizer=self.synthesizer
+        )
     
     async def route(
         self, 
         query: str, 
         context: str,
-        force_web: bool = False
+        force_web: bool = False,
+        enable_orthogonal: bool = False
     ) -> CascadeResult:
         """
         Main routing logic. Returns results from the appropriate path.
+        
+        Args:
+            query: Search query (usually tangential concepts)
+            context: Full screen context
+            force_web: Force web search even if KB has results
+            enable_orthogonal: Enable orthogonal/serendipitous search
         """
+        
+        # Step 0: Orthogonal Search (Serendipity) - if enabled
+        if enable_orthogonal:
+            orthogonal_result = await self._check_orthogonal(context, query)
+            if orthogonal_result and orthogonal_result.items:
+                # Orthogonal search found serendipitous results
+                # Optionally combine with graph results for richer context
+                graph_result = await self._check_graph(query)
+                
+                if graph_result:
+                    # Combine orthogonal + graph for maximum serendipity
+                    combined = orthogonal_result.items[:2] + graph_result[:2]
+                    return CascadeResult(
+                        items=combined,
+                        path=RetrievalPath.ORTHOGONAL_PLUS_GRAPH,
+                        confidence=ConfidenceLevel.HIGH,
+                        graph_insight=True,
+                        orthogonal_metadata=orthogonal_result.metadata,
+                        vibe_profile=orthogonal_result.vibe
+                    )
+                
+                return CascadeResult(
+                    items=orthogonal_result.items,
+                    path=RetrievalPath.ORTHOGONAL,
+                    confidence=ConfidenceLevel.MEDIUM,  # Orthogonal is inherently exploratory
+                    graph_insight=False,
+                    orthogonal_metadata=orthogonal_result.metadata,
+                    vibe_profile=orthogonal_result.vibe
+                )
         
         # Step 1: Graph Check (Serendipity)
         graph_result = await self._check_graph(query)
@@ -280,7 +343,101 @@ class CascadeRouter:
         """
         return await self.exa.search(query, num_results=5)
     
+    async def _check_orthogonal(
+        self, 
+        context: str, 
+        query: str
+    ) -> Optional['OrthogonalCombinedResult']:
+        """
+        Orthogonal Search: Find serendipitous cross-domain results.
+        
+        Uses three strategies:
+        1. Noise injection - perturb query embedding
+        2. Archetype bridge - find what same person type loves
+        3. Cross-domain - project vibe into different categories
+        """
+        try:
+            # Run all orthogonal strategies
+            results = await self.orthogonal.search_all_strategies(
+                context=context,
+                original_query=query,
+                num_results_per_strategy=2
+            )
+            
+            if not results:
+                return None
+            
+            # Combine results from all strategies
+            combined, metadata = self.orthogonal.combine_results(
+                results,
+                max_total=self.settings.max_suggestions + 1  # Get one extra for diversity
+            )
+            
+            if not combined:
+                return None
+            
+            # Extract vibe profile from results (if available)
+            vibe = None
+            for r in results:
+                if r.vibe_profile and r.vibe_profile.archetype:
+                    vibe = r.vibe_profile
+                    break
+            
+            print(f"   🎲 Orthogonal search found {len(combined)} results")
+            print(f"      Strategies: {metadata.get('strategies_used', [])}")
+            
+            return OrthogonalCombinedResult(
+                items=combined,
+                metadata=metadata,
+                vibe=vibe
+            )
+            
+        except Exception as e:
+            print(f"   ⚠️ Orthogonal search error: {e}")
+            return None
+    
+    async def route_orthogonal_only(
+        self,
+        context: str,
+        query: str
+    ) -> CascadeResult:
+        """
+        Route using ONLY orthogonal search strategies.
+        Useful for testing and when maximum serendipity is desired.
+        """
+        result = await self._check_orthogonal(context, query)
+        
+        if result and result.items:
+            return CascadeResult(
+                items=result.items,
+                path=RetrievalPath.ORTHOGONAL,
+                confidence=ConfidenceLevel.MEDIUM,
+                orthogonal_metadata=result.metadata,
+                vibe_profile=result.vibe
+            )
+        
+        # Fallback to standard web search if orthogonal fails
+        web_results = await self.exa.search(query, num_results=5)
+        return CascadeResult(
+            items=web_results,
+            path=RetrievalPath.WEB,
+            confidence=ConfidenceLevel.LOW
+        )
+    
     async def close(self):
         """Clean up resources."""
         await self.supermemory.close()
+
+
+class OrthogonalCombinedResult:
+    """Combined result from orthogonal search strategies."""
+    def __init__(
+        self,
+        items: list[SearchResult],
+        metadata: dict,
+        vibe: Optional[VibeProfile] = None
+    ):
+        self.items = items
+        self.metadata = metadata
+        self.vibe = vibe
 
