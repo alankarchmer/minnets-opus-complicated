@@ -120,3 +120,62 @@ class VibeProfile(BaseModel):
         default="",
         description="The domain this vibe was extracted from: 'pottery', 'architecture', etc."
     )
+
+
+class StrategyWeights(BaseModel):
+    """
+    LLM-determined weights for retrieval strategies.
+    Values are 0.0 to 1.0 - used for allocation and ranking, not binary gating.
+    """
+    # INTENT dimensions: What kind of result are we looking for?
+    serendipity: float = Field(
+        ...,
+        ge=0, le=1,
+        description="Weight for novelty, unexpected connections, and 'vibes'. High for boredom/browsing."
+    )
+    relevance: float = Field(
+        ...,
+        ge=0, le=1,
+        description="Weight for direct semantic similarity and factual accuracy. High for work/research."
+    )
+    
+    # SOURCE dimensions: Where should we look?
+    source_web: float = Field(
+        ...,
+        ge=0, le=1,
+        description="Necessity of external, fresh, world knowledge (Exa/Search)."
+    )
+    source_local: float = Field(
+        ...,
+        ge=0, le=1,
+        description="Necessity of user's own memories, notes, and history."
+    )
+    
+    reasoning: str = Field(
+        default="",
+        description="Short explanation of why these weights were chosen."
+    )
+
+
+class FeedbackType(str, Enum):
+    """Types of user feedback signals."""
+    # Implicit signals
+    CLICK = "click"
+    DWELL = "dwell"
+    DISMISS = "dismiss"
+    SCROLL_PAST = "scroll_past"
+    # Explicit signals
+    THUMBS_UP = "thumbs_up"
+    THUMBS_DOWN = "thumbs_down"
+    SAVE = "save"
+
+
+class FeedbackRequest(CamelModel):
+    """Request to log user feedback on an insight."""
+    request_id: str = Field(..., description="ID of the original /analyze request")
+    insight_id: str = Field(..., description="ID of the suggestion being rated")
+    feedback_type: FeedbackType
+    # Optional metadata for richer signals
+    dwell_time_ms: Optional[int] = None
+    position_in_list: Optional[int] = None
+    metadata: Optional[dict] = None

@@ -20,13 +20,27 @@ with patch('config.get_settings') as mock_settings:
         min_similarity_threshold=0.65,
         max_similarity_threshold=0.85,
         max_suggestions=3,
-        openai_model="gpt-4",
+        openai_model="gpt-4.1",
         openai_embedding_model="text-embedding-3-small",
+        # Context Judge settings
+        context_judge_model="gpt-4o-2024-08-06",
+        judge_log_path="training_data/router_decisions.jsonl",
+        # Orthogonal Search settings
         orthogonal_enabled=True,
         orthogonal_noise_scale=0.15,
         orthogonal_archetype_enabled=True,
         orthogonal_target_domains=["restaurants", "music", "films"],
-        orthogonal_vibe_temperature=0.8
+        orthogonal_vibe_temperature=0.8,
+        # Vector Math settings
+        pca_lambda_surprise=1.0,
+        pca_min_memories=5,
+        pca_num_components=2,
+        antonym_alpha=0.5,
+        antonym_target_vibes=["relaxation", "novelty", "adventure"],
+        bridge_domains=["restaurant", "movie", "music", "book"],
+        # Reranking settings
+        rerank_pool_size=50,
+        rerank_top_k=5
     )
     from main import app
 
@@ -65,15 +79,29 @@ class TestAnalyzeEndpoint:
         })
         assert response.status_code == 422  # Validation error
     
+    @patch('main.judge_logger')
+    @patch('main.context_judge')
     @patch('main.synthesizer')
     @patch('main.cascade_router')
     @patch('main.scorer')
     @patch('main.exa_client')
     def test_analyze_returns_empty_when_no_concepts(
-        self, mock_exa, mock_scorer, mock_router, mock_synth
+        self, mock_exa, mock_scorer, mock_router, mock_synth, mock_judge, mock_logger
     ):
         """Analyze should return empty suggestions when no concepts extracted."""
+        from models import StrategyWeights
+        
+        # Mock context judge
+        mock_judge.analyze = AsyncMock(return_value=StrategyWeights(
+            serendipity=0.5,
+            relevance=0.5,
+            source_web=0.5,
+            source_local=0.5,
+            reasoning="Test"
+        ))
+        
         mock_synth.extract_concepts = AsyncMock(return_value=[])
+        mock_logger.log_decision = AsyncMock()
         
         response = client.post("/analyze", json={
             "context": "Very short",
@@ -430,6 +458,11 @@ class TestCascadeRouter:
         assert RetrievalPath.GRAPH.value == "graph"
         assert RetrievalPath.VECTOR.value == "vector"
         assert RetrievalPath.WEB.value == "web"
+        # Vector math paths
+        assert RetrievalPath.VECTOR_MATH.value == "vector_math"
+        assert RetrievalPath.VECTOR_MATH_PCA.value == "vector_math_pca"
+        assert RetrievalPath.VECTOR_MATH_ANTONYM.value == "vector_math_antonym"
+        assert RetrievalPath.VECTOR_MATH_BRIDGE.value == "vector_math_bridge"
     
     def test_confidence_level_enum(self):
         """Test ConfidenceLevel enum values."""
@@ -438,6 +471,207 @@ class TestCascadeRouter:
         assert ConfidenceLevel.HIGH.value == "high"
         assert ConfidenceLevel.MEDIUM.value == "medium"
         assert ConfidenceLevel.LOW.value == "low"
+
+
+class TestFeedbackEndpoint:
+    """Tests for the /feedback endpoint."""
+    
+    @patch('main.judge_logger')
+    def test_feedback_logs_click(self, mock_logger):
+        """Test feedback endpoint logs click events."""
+        mock_logger.log_feedback = AsyncMock()
+        
+        response = client.post("/feedback", json={
+            "requestId": "req-123",
+            "insightId": "insight-456",
+            "feedbackType": "click"
+        })
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "logged"
+        assert data["feedback_type"] == "click"
+    
+    @patch('main.judge_logger')
+    def test_feedback_logs_dwell_with_metadata(self, mock_logger):
+        """Test feedback endpoint logs dwell events with optional metadata."""
+        mock_logger.log_feedback = AsyncMock()
+        
+        response = client.post("/feedback", json={
+            "requestId": "req-123",
+            "insightId": "insight-456",
+            "feedbackType": "dwell",
+            "dwellTimeMs": 5000,
+            "positionInList": 0,
+            "metadata": {"expanded": True}
+        })
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "logged"
+    
+    def test_feedback_requires_all_fields(self):
+        """Test feedback endpoint requires requestId, insightId, feedbackType."""
+        response = client.post("/feedback", json={
+            "requestId": "req-123"
+            # Missing insightId and feedbackType
+        })
+        assert response.status_code == 422
+
+
+class TestContextJudgeEndpoint:
+    """Tests for the /test-context-judge endpoint."""
+    
+    @patch('main.context_judge')
+    def test_context_judge_returns_weights(self, mock_judge):
+        """Test context judge endpoint returns strategy weights."""
+        from models import StrategyWeights
+        
+        mock_judge.analyze = AsyncMock(return_value=StrategyWeights(
+            serendipity=0.7,
+            relevance=0.3,
+            source_web=0.6,
+            source_local=0.4,
+            reasoning="User appears to be browsing casually"
+        ))
+        
+        # Note: endpoint uses query params, not JSON body
+        response = client.post(
+            "/test-context-judge?context=Some+test+context&app_name=Safari&window_title=Test"
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        assert "weights" in data
+        assert data["weights"]["serendipity"] == 0.7
+        assert data["weights"]["relevance"] == 0.3
+        assert "interpretation" in data
+    
+    @patch('main.context_judge')
+    def test_context_judge_with_default_context(self, mock_judge):
+        """Test context judge endpoint works with default context."""
+        from models import StrategyWeights
+        
+        mock_judge.analyze = AsyncMock(return_value=StrategyWeights(
+            serendipity=0.5,
+            relevance=0.6,
+            source_web=0.7,
+            source_local=0.5,
+            reasoning="Reading Wikipedia article"
+        ))
+        
+        # No params uses defaults (empty context, Safari, Test)
+        response = client.post("/test-context-judge")
+        assert response.status_code == 200
+
+
+class TestStrategyWeights:
+    """Tests for the StrategyWeights model."""
+    
+    def test_strategy_weights_validation(self):
+        """Test StrategyWeights validates 0.0-1.0 range."""
+        from models import StrategyWeights
+        
+        # Valid weights
+        weights = StrategyWeights(
+            serendipity=0.5,
+            relevance=0.5,
+            source_web=0.5,
+            source_local=0.5,
+            reasoning="Test"
+        )
+        assert weights.serendipity == 0.5
+        
+        # Invalid: above 1.0
+        with pytest.raises(ValueError):
+            StrategyWeights(
+                serendipity=1.5,  # Invalid
+                relevance=0.5,
+                source_web=0.5,
+                source_local=0.5
+            )
+        
+        # Invalid: below 0.0
+        with pytest.raises(ValueError):
+            StrategyWeights(
+                serendipity=-0.1,  # Invalid
+                relevance=0.5,
+                source_web=0.5,
+                source_local=0.5
+            )
+    
+    def test_feedback_type_enum(self):
+        """Test FeedbackType enum values."""
+        from models import FeedbackType
+        
+        # Implicit signals
+        assert FeedbackType.CLICK.value == "click"
+        assert FeedbackType.DWELL.value == "dwell"
+        assert FeedbackType.DISMISS.value == "dismiss"
+        assert FeedbackType.SCROLL_PAST.value == "scroll_past"
+        
+        # Explicit signals
+        assert FeedbackType.THUMBS_UP.value == "thumbs_up"
+        assert FeedbackType.THUMBS_DOWN.value == "thumbs_down"
+        assert FeedbackType.SAVE.value == "save"
+
+
+class TestJudgeLogger:
+    """Tests for the JudgeLogger module."""
+    
+    def test_logger_creates_directory(self):
+        """Test that JudgeLogger creates the training_data directory."""
+        import tempfile
+        import os
+        from retrieval.judge_logger import JudgeLogger
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, "subdir", "logs.jsonl")
+            logger = JudgeLogger(filepath=filepath)
+            
+            # Directory should be created
+            assert os.path.exists(os.path.dirname(filepath))
+    
+    @pytest.mark.asyncio
+    async def test_logger_writes_decision(self):
+        """Test that JudgeLogger writes decision entries."""
+        import tempfile
+        import os
+        import json
+        from retrieval.judge_logger import JudgeLogger
+        from models import StrategyWeights
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, "logs.jsonl")
+            logger = JudgeLogger(filepath=filepath)
+            
+            weights = StrategyWeights(
+                serendipity=0.5,
+                relevance=0.5,
+                source_web=0.5,
+                source_local=0.5,
+                reasoning="Test"
+            )
+            
+            await logger.log_decision(
+                request_id="test-123",
+                app_name="Safari",
+                window_title="Test Window",
+                weights=weights,
+                insight_ids=["i1", "i2"],
+                context_len=1000,
+                retrieval_path="weighted"
+            )
+            
+            # Read back the entry
+            with open(filepath, 'r') as f:
+                entry = json.loads(f.readline())
+            
+            assert entry["type"] == "decision"
+            assert entry["request_id"] == "test-123"
+            assert entry["app_name"] == "Safari"
+            assert entry["weights"]["serendipity"] == 0.5
 
 
 if __name__ == "__main__":

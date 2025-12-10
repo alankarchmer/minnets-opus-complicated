@@ -24,13 +24,53 @@ import asyncio
 from typing import Optional, Union
 from enum import Enum
 
-from models import Memory, SearchResult, VibeProfile
+from models import Memory, SearchResult, VibeProfile, StrategyWeights
 from retrieval.supermemory import SupermemoryClient
 from retrieval.exa_search import ExaSearchClient
 from retrieval.scoring import RetrievalScorer
 from retrieval.orthogonal_search import OrthogonalSearcher, OrthogonalResult
 from synthesis.openai_client import OpenAISynthesizer
 from config import get_settings
+
+
+class ScoredCandidate:
+    """
+    Wrapper for retrieval candidates with provenance tracking.
+    Tracks source (web/local) and strategy (orthogonal/vector) for weighted ranking.
+    """
+    def __init__(
+        self,
+        item: Union[Memory, SearchResult],
+        source: str,  # "web" or "supermemory"
+        strategy: str,  # "orthogonal", "vector", "graph"
+        raw_score: float = 0.0
+    ):
+        self.item = item
+        self.source = source
+        self.strategy = strategy
+        self.raw_score = raw_score
+        self.adjusted_score = raw_score
+    
+    def apply_weight_boost(self, weights: StrategyWeights):
+        """Apply weight-based boosting to the score."""
+        score = self.raw_score
+        
+        # Boost by SOURCE match
+        if self.source == "web":
+            score *= (1 + weights.source_web)
+        elif self.source == "supermemory":
+            score *= (1 + weights.source_local)
+        
+        # Boost by INTENT match
+        if self.strategy == "orthogonal":
+            # If user wants serendipity, boost these items heavily
+            score *= (1 + weights.serendipity * 2.0)
+        else:
+            # Vector/graph results get relevance boost
+            score *= (1 + weights.relevance)
+        
+        self.adjusted_score = score
+        return self
 
 
 class RetrievalPath(str, Enum):
@@ -42,6 +82,12 @@ class RetrievalPath(str, Enum):
     WEB = "web"
     GRAPH_PLUS_WEB = "graph_plus_web"
     VECTOR_PLUS_WEB = "vector_plus_web"
+    WEIGHTED = "weighted"  # Dynamic multi-strategy based on StrategyWeights
+    # Vector math strategies (true embedding arithmetic)
+    VECTOR_MATH = "vector_math"  # PCA, antonym, bridge combined
+    VECTOR_MATH_PCA = "vector_math_pca"  # Principal component subtraction only
+    VECTOR_MATH_ANTONYM = "vector_math_antonym"  # Antonym steering only
+    VECTOR_MATH_BRIDGE = "vector_math_bridge"  # Cross-modal bridge only
 
 
 class ConfidenceLevel(str, Enum):
@@ -218,6 +264,231 @@ class CascadeRouter:
             graph_insight=False
         )
     
+    async def route_weighted(
+        self,
+        query: str,
+        context: str,
+        weights: StrategyWeights
+    ) -> CascadeResult:
+        """
+        Route using allocation-based multi-strategy execution.
+        
+        Key principle: Weights determine HOW MANY results to fetch and 
+        HOW MUCH to boost scores, not binary on/off switches.
+        
+        Args:
+            query: Search query (usually tangential concepts)
+            context: Full screen context (passed to orthogonal for antonym steering)
+            weights: LLM-determined strategy weights
+            
+        Returns:
+            CascadeResult with items from multiple strategies, ranked by adjusted score
+        """
+        tasks = []
+        task_metadata = []  # Track (source, strategy) for each task
+        
+        # --- 1. BUDGET ALLOCATION ---
+        # Total fetch pool before ranking
+        base_fetch_count = 10
+        
+        # Calculate dynamic limits (minimum 1 if weight > 0.1 to avoid total silence)
+        limit_web = max(1, int(base_fetch_count * weights.source_web)) if weights.source_web > 0.1 else 0
+        limit_local = max(1, int(base_fetch_count * weights.source_local)) if weights.source_local > 0.1 else 0
+        
+        print(f"   📊 Budget allocation: web={limit_web}, local={limit_local}")
+        print(f"      Weights: serendipity={weights.serendipity:.2f}, relevance={weights.relevance:.2f}")
+        
+        # --- 2. DISPATCH STRATEGIES ---
+        
+        # Track A: Serendipity (Orthogonal Search)
+        # Low threshold (0.2) - even a little serendipity desire gets some results
+        if weights.serendipity > 0.2:
+            # Scale lambda_surprise based on the weight
+            # Higher serendipity = more aggressive orthogonal search
+            lambda_surprise = weights.serendipity * 1.5
+            
+            tasks.append(self._fetch_orthogonal(
+                query=query,
+                context=context,
+                lambda_surprise=lambda_surprise,
+                limit=min(3, limit_web + limit_local)  # Orthogonal draws from both
+            ))
+            task_metadata.append(("mixed", "orthogonal"))
+        
+        # Track B: Relevance (Standard Vector Search from Supermemory)
+        if limit_local > 0:
+            tasks.append(self._fetch_local(query, limit=limit_local))
+            task_metadata.append(("supermemory", "vector"))
+        
+        # Track C: Web (Exa search)
+        if limit_web > 0:
+            tasks.append(self._fetch_web(query, limit=limit_web))
+            task_metadata.append(("web", "vector"))
+        
+        # --- 3. EXECUTE PARALLEL ---
+        if not tasks:
+            print("   ⚠️ No strategies dispatched (all weights too low)")
+            return CascadeResult(
+                items=[],
+                path=RetrievalPath.WEIGHTED,
+                confidence=ConfidenceLevel.LOW
+            )
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # --- 4. COLLECT & TAG CANDIDATES ---
+        candidates: list[ScoredCandidate] = []
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"   ⚠️ Strategy {task_metadata[i]} failed: {result}")
+                continue
+            
+            source, strategy = task_metadata[i]
+            
+            for item in result:
+                # Get raw score
+                if isinstance(item, Memory):
+                    raw_score = item.similarity
+                elif isinstance(item, SearchResult):
+                    raw_score = item.score
+                else:
+                    raw_score = 0.5  # Default
+                
+                candidate = ScoredCandidate(
+                    item=item,
+                    source=source if source != "mixed" else ("web" if isinstance(item, SearchResult) else "supermemory"),
+                    strategy=strategy,
+                    raw_score=raw_score
+                )
+                candidates.append(candidate)
+        
+        if not candidates:
+            print("   ⚠️ No candidates from any strategy")
+            return CascadeResult(
+                items=[],
+                path=RetrievalPath.WEIGHTED,
+                confidence=ConfidenceLevel.LOW
+            )
+        
+        # --- 5. WEIGHTED RANKING (the secret sauce) ---
+        # Apply weight-based boosting
+        for candidate in candidates:
+            candidate.apply_weight_boost(weights)
+        
+        # Sort by adjusted score
+        candidates.sort(key=lambda x: x.adjusted_score, reverse=True)
+        
+        # Deduplicate by content (keep highest scored version)
+        seen_content = set()
+        unique_candidates = []
+        for candidate in candidates:
+            # Create content fingerprint
+            if isinstance(candidate.item, Memory):
+                content_key = candidate.item.content[:100]
+            else:
+                content_key = candidate.item.url
+            
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_candidates.append(candidate)
+        
+        # Take top N
+        top_candidates = unique_candidates[:self.settings.max_suggestions]
+        
+        # Calculate confidence based on top scores
+        if top_candidates:
+            avg_adjusted = sum(c.adjusted_score for c in top_candidates) / len(top_candidates)
+            if avg_adjusted > 1.5:
+                confidence = ConfidenceLevel.HIGH
+            elif avg_adjusted > 1.0:
+                confidence = ConfidenceLevel.MEDIUM
+            else:
+                confidence = ConfidenceLevel.LOW
+        else:
+            confidence = ConfidenceLevel.LOW
+        
+        # Log strategy distribution
+        strategies_used = {}
+        for c in top_candidates:
+            key = f"{c.source}:{c.strategy}"
+            strategies_used[key] = strategies_used.get(key, 0) + 1
+        print(f"   ✅ Weighted routing: {len(top_candidates)} results from {strategies_used}")
+        
+        return CascadeResult(
+            items=[c.item for c in top_candidates],
+            path=RetrievalPath.WEIGHTED,
+            confidence=confidence,
+            orthogonal_metadata={
+                "weights": weights.model_dump(),
+                "strategies_used": strategies_used,
+                "total_candidates": len(candidates)
+            }
+        )
+    
+    async def _fetch_orthogonal(
+        self,
+        query: str,
+        context: str,
+        lambda_surprise: float,
+        limit: int,
+        include_vector_math: bool = True
+    ) -> list[SearchResult]:
+        """
+        Fetch results using orthogonal search strategies.
+        
+        Args:
+            query: Search query
+            context: Screen context
+            lambda_surprise: Serendipity intensity
+            limit: Max results to return
+            include_vector_math: Whether to include vector math strategies (PCA, antonym, bridge)
+        """
+        try:
+            # Optionally fetch user memories for vector math strategies
+            user_memories = None
+            if include_vector_math:
+                user_memories = await self.supermemory.search("", limit=20)
+            
+            results = await self.orthogonal.search_all_strategies(
+                context=context,
+                original_query=query,
+                num_results_per_strategy=max(1, limit // 3),
+                include_vector_math=include_vector_math and user_memories is not None,
+                user_memories=user_memories
+            )
+            
+            if not results:
+                return []
+            
+            # Combine and take top results
+            combined, _ = self.orthogonal.combine_results(results, max_total=limit)
+            return combined
+            
+        except Exception as e:
+            print(f"   ⚠️ Orthogonal fetch error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    async def _fetch_local(self, query: str, limit: int) -> list[Memory]:
+        """Fetch results from Supermemory (local knowledge base)."""
+        try:
+            memories = await self.supermemory.search(query, limit=limit)
+            return memories or []
+        except Exception as e:
+            print(f"   ⚠️ Local fetch error: {e}")
+            return []
+    
+    async def _fetch_web(self, query: str, limit: int) -> list[SearchResult]:
+        """Fetch results from Exa (web search)."""
+        try:
+            results = await self.exa.search(query, num_results=limit)
+            return results or []
+        except Exception as e:
+            print(f"   ⚠️ Web fetch error: {e}")
+            return []
+
     async def _check_graph(self, query: str) -> Optional[list[Memory]]:
         """
         Graph Pivot strategy: Don't show what matches the screen.
@@ -422,6 +693,239 @@ class CascadeRouter:
             items=web_results,
             path=RetrievalPath.WEB,
             confidence=ConfidenceLevel.LOW
+        )
+    
+    # =========================================================================
+    # VECTOR MATH ROUTING (True Embedding Arithmetic)
+    # =========================================================================
+    
+    async def route_vector_math(
+        self,
+        context: str,
+        query: str,
+        user_memories: list[Memory] = None
+    ) -> CascadeResult:
+        """
+        Route using ONLY vector math strategies (PCA, antonym, bridge).
+        
+        This is the mathematically pure serendipity path:
+        - PCA: Subtract dominant taste to reveal hidden preferences
+        - Antonym: Steer away from context, towards target vibe
+        - Bridge: Transform content across domains
+        
+        Args:
+            context: User's screen context
+            query: Search query (used for fallback)
+            user_memories: User's saved memories (fetched from Supermemory if not provided)
+            
+        Returns:
+            CascadeResult with mathematically serendipitous items
+        """
+        # Fetch user memories if not provided
+        if user_memories is None:
+            user_memories = await self.supermemory.search("", limit=20)
+        
+        if not user_memories:
+            print("   ⚠️ Vector math: No user memories available")
+            # Fallback to standard web search
+            web_results = await self.exa.search(query, num_results=5)
+            return CascadeResult(
+                items=web_results,
+                path=RetrievalPath.WEB,
+                confidence=ConfidenceLevel.LOW
+            )
+        
+        try:
+            # Run all vector math strategies
+            results = await self.orthogonal.search_vector_math_only(
+                context=context,
+                user_memories=user_memories,
+                num_results_per_strategy=3
+            )
+            
+            if not results:
+                print("   ⚠️ Vector math: No results from any strategy")
+                web_results = await self.exa.search(query, num_results=5)
+                return CascadeResult(
+                    items=web_results,
+                    path=RetrievalPath.WEB,
+                    confidence=ConfidenceLevel.LOW
+                )
+            
+            # Combine results from all strategies
+            combined, metadata = self.orthogonal.combine_results(
+                results,
+                max_total=self.settings.max_suggestions + 1
+            )
+            
+            # Build rich metadata
+            orthogonal_metadata = {
+                "strategies_used": metadata.get("strategies_used", []),
+                "queries_used": metadata.get("queries_used", []),
+                "subtracted_tags": [],
+                "target_vibes": []
+            }
+            
+            # Extract provenance info
+            vibe = None
+            for r in results:
+                if r.vibe_profile and r.vibe_profile.archetype:
+                    vibe = r.vibe_profile
+                if r.subtracted_tags:
+                    orthogonal_metadata["subtracted_tags"].extend(r.subtracted_tags)
+                if r.target_vibe:
+                    orthogonal_metadata["target_vibes"].append(r.target_vibe)
+            
+            print(f"   🧮 Vector math found {len(combined)} results")
+            print(f"      Strategies: {orthogonal_metadata['strategies_used']}")
+            
+            return CascadeResult(
+                items=combined,
+                path=RetrievalPath.VECTOR_MATH,
+                confidence=ConfidenceLevel.MEDIUM,  # Vector math is exploratory
+                orthogonal_metadata=orthogonal_metadata,
+                vibe_profile=vibe
+            )
+            
+        except Exception as e:
+            print(f"   ⚠️ Vector math routing error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Fallback to web search
+            web_results = await self.exa.search(query, num_results=5)
+            return CascadeResult(
+                items=web_results,
+                path=RetrievalPath.WEB,
+                confidence=ConfidenceLevel.LOW
+            )
+    
+    async def route_vector_math_pca(
+        self,
+        context: str,
+        user_memories: list[Memory]
+    ) -> CascadeResult:
+        """
+        Route using ONLY PCA subtraction strategy.
+        
+        Best for: Finding hidden preferences by removing dominant taste vectors.
+        
+        Args:
+            context: User's screen context
+            user_memories: User's saved memories
+            
+        Returns:
+            CascadeResult with PCA-serendipitous items
+        """
+        if len(user_memories) < self.settings.pca_min_memories:
+            return CascadeResult(
+                items=[],
+                path=RetrievalPath.VECTOR_MATH_PCA,
+                confidence=ConfidenceLevel.LOW,
+                orthogonal_metadata={"error": f"Need at least {self.settings.pca_min_memories} memories"}
+            )
+        
+        vibe = await self.synthesizer.extract_vibe(context)
+        
+        result = await self.orthogonal.search_principal_component(
+            user_memories=user_memories,
+            vibe=vibe,
+            num_results=self.settings.max_suggestions
+        )
+        
+        return CascadeResult(
+            items=result.items,
+            path=RetrievalPath.VECTOR_MATH_PCA,
+            confidence=ConfidenceLevel.MEDIUM if result.items else ConfidenceLevel.LOW,
+            orthogonal_metadata={
+                "strategy": "pca",
+                "subtracted_tags": result.subtracted_tags,
+                "query_used": result.query_used
+            },
+            vibe_profile=result.vibe_profile
+        )
+    
+    async def route_vector_math_antonym(
+        self,
+        context: str,
+        user_memories: list[Memory],
+        target_vibe: str = None
+    ) -> CascadeResult:
+        """
+        Route using ONLY antonym steering strategy.
+        
+        Best for: Escaping current context (e.g., sterile office → cozy cafe).
+        
+        Args:
+            context: User's screen context
+            user_memories: User's saved memories
+            target_vibe: Optional specific target vibe to steer towards
+            
+        Returns:
+            CascadeResult with contrast-steered items
+        """
+        vibe = await self.synthesizer.extract_vibe(context)
+        
+        result = await self.orthogonal.search_antonym_steering(
+            current_context=context,
+            user_memories=user_memories,
+            vibe=vibe,
+            target_vibe=target_vibe,
+            num_results=self.settings.max_suggestions
+        )
+        
+        return CascadeResult(
+            items=result.items,
+            path=RetrievalPath.VECTOR_MATH_ANTONYM,
+            confidence=ConfidenceLevel.MEDIUM if result.items else ConfidenceLevel.LOW,
+            orthogonal_metadata={
+                "strategy": "antonym",
+                "target_vibe": result.target_vibe,
+                "query_used": result.query_used
+            },
+            vibe_profile=result.vibe_profile
+        )
+    
+    async def route_vector_math_bridge(
+        self,
+        context: str,
+        source_domain: str,
+        target_domain: str
+    ) -> CascadeResult:
+        """
+        Route using ONLY cross-modal bridge strategy.
+        
+        Best for: "If this movie were a restaurant, what would it be?"
+        
+        Args:
+            context: User's screen context (content to transform)
+            source_domain: Original domain (e.g., "movie")
+            target_domain: Target domain (e.g., "restaurant")
+            
+        Returns:
+            CascadeResult with cross-domain transformed items
+        """
+        vibe = await self.synthesizer.extract_vibe(context)
+        
+        result = await self.orthogonal.search_bridge_vector(
+            content=context[:2000],
+            source_domain=source_domain,
+            target_domain=target_domain,
+            vibe=vibe,
+            num_results=self.settings.max_suggestions
+        )
+        
+        return CascadeResult(
+            items=result.items,
+            path=RetrievalPath.VECTOR_MATH_BRIDGE,
+            confidence=ConfidenceLevel.MEDIUM if result.items else ConfidenceLevel.LOW,
+            orthogonal_metadata={
+                "strategy": "bridge",
+                "source_domain": source_domain,
+                "target_domain": result.target_domain,
+                "query_used": result.query_used
+            },
+            vibe_profile=result.vibe_profile
         )
     
     async def close(self):

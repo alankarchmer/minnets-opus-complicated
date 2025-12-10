@@ -2,6 +2,7 @@ from openai import AsyncOpenAI
 from typing import Union
 import json
 import uuid
+import numpy as np
 
 from models import Memory, SearchResult, Suggestion, SuggestionSource, VibeProfile
 from config import get_settings
@@ -291,7 +292,144 @@ Extract the vibe profile - focus on the TYPE OF PERSON who appreciates this, not
             return response.data[0].embedding
         except Exception as e:
             print(f"Embedding error: {e}")
-            return []
+            return [0.0] * 1536  # Return zero vector on error
+    
+    async def get_embeddings_batch(self, texts: list[str]) -> np.ndarray:
+        """
+        Batch embed multiple texts in a single API call.
+        
+        Critical for performance: avoids the "10-second hang" of sequential
+        embedding calls when reranking 50+ results.
+        
+        Args:
+            texts: List of texts to embed
+            
+        Returns:
+            numpy array of shape (len(texts), embedding_dim)
+        """
+        if not texts:
+            return np.array([])
+        
+        try:
+            # Truncate each text and batch embed
+            truncated = [t[:8000] for t in texts]
+            response = await self.client.embeddings.create(
+                model=self.embedding_model,
+                input=truncated
+            )
+            # Return as numpy array for vectorized operations
+            return np.array([item.embedding for item in response.data])
+        except Exception as e:
+            print(f"Batch embedding error: {e}")
+            # Return zero vectors on error
+            return np.zeros((len(texts), 1536))
+    
+    async def describe_vector_vibe(
+        self,
+        original_vibe: VibeProfile,
+        subtracted_components: list[str]
+    ) -> str:
+        """
+        Generate 3-5 adjectives describing the residual vibe after PCA subtraction.
+        
+        This bridges the gap between raw vectors and Exa search queries.
+        We can't search Exa with a vector, but we can describe what
+        REMAINS after removing the dominant traits.
+        
+        Args:
+            original_vibe: The user's extracted vibe profile
+            subtracted_components: Snippets from memories that defined the removed axes
+            
+        Returns:
+            Comma-separated adjectives for search query flavoring
+        """
+        # Summarize what was removed
+        removed_summary = "; ".join(subtracted_components[:3]) if subtracted_components else "general preferences"
+        
+        prompt = f"""The user's taste profile had these dominant traits REMOVED by mathematical projection:
+{removed_summary}
+
+Original emotional signatures: {', '.join(original_vibe.emotional_signatures)}
+Original archetype: {original_vibe.archetype[:200] if original_vibe.archetype else 'Unknown'}
+
+What REMAINS after removing the dominant traits? 
+Return 3-5 adjectives describing the subtle, underlying aesthetic.
+Format: "adjective1, adjective2, adjective3" (no explanation, just the adjectives)"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=30
+            )
+            result = response.choices[0].message.content.strip()
+            print(f"   🎯 Residual vibe keywords: {result}")
+            return result
+        except Exception as e:
+            print(f"Describe vector vibe error: {e}")
+            # Fallback: use original signatures
+            return ", ".join(original_vibe.emotional_signatures[:3]) if original_vibe.emotional_signatures else "unique, hidden, authentic"
+    
+    async def generate_serendipity_pitch(
+        self,
+        item: SearchResult,
+        context_summary: str,
+        subtracted_tags: list[str],
+        strategy: str
+    ) -> str:
+        """
+        Generate a compelling 2-sentence pitch for a serendipitous recommendation.
+        
+        The pitch must explain the CONNECTION without mentioning algorithms.
+        Focus on emotional contrast and the "friend whispering a secret" tone.
+        
+        Args:
+            item: The recommended item
+            context_summary: Brief description of user's current context
+            subtracted_tags: What was mathematically removed (for context)
+            strategy: Which technique found this ("pca", "antonym", "bridge")
+            
+        Returns:
+            2-sentence pitch connecting the item to user's unspoken need
+        """
+        # Build context based on strategy
+        if strategy == "pca":
+            context_hint = f"We looked beyond their usual interests in: {', '.join(subtracted_tags[:2])}"
+        elif strategy == "antonym":
+            context_hint = "We found the opposite of their current environment"
+        else:
+            context_hint = "We translated their taste into a different domain"
+        
+        prompt = f"""You are a curator of "meaningful friction." The user is currently in a context described as: "{context_summary}".
+
+{context_hint}
+
+We found this item for them: 
+Name: {item.title}
+Description: {item.text[:500] if item.text else 'No description available'}
+
+Your Goal: Write a 2-sentence "pitch" that connects their current unspoken need to this specific item.
+
+Rules:
+1. Do NOT mention the algorithm, vectors, or math.
+2. Focus on the *emotional contrast*. (e.g., "You've been surrounded by glass and steel all day. This place feels like it was built by human hands.")
+3. Be confident but low-key. Like a friend whispering a secret recommendation.
+4. Make it feel like serendipity, not a calculated suggestion.
+
+Pitch:"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,
+                max_tokens=100
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Serendipity pitch error: {e}")
+            return f"This might be exactly what you didn't know you were looking for."
     
     async def generate_archetype_query(self, vibe: VibeProfile, target_domain: str) -> str:
         """
